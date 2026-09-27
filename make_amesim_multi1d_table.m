@@ -54,6 +54,21 @@ function make_amesim_multi1d_table(varargin)
 %     data rows are spread over those points in sheet order, each row held
 %     for an equal number of points. At every print time all inputs equal one
 %     data row, so the table output equals that row's value.
+%     rowOrder = 'snake' plays the rows so that consecutive rows differ in
+%     one input by one breakpoint (smaller jumps than sheet order).
+%
+%   TIME COLUMN
+%     A time column in the sheet (header time, Time_s, Time [s], t ...) is
+%     found automatically (timeColumn = 'auto') and never used as a table
+%     input or value. For real mission profiles use
+%     make_amesim_mission_signals.m.
+%
+%   OFF-GRID TEST  (optional, offGridPoints = 0 switches it off completely)
+%     offGridPoints > 0 also writes <table>_offgrid_input<k>_<name>.txt and
+%     <table>_offgrid_expected_<value>.txt: random points between the
+%     breakpoints with the linearly interpolated table output, on the same
+%     time grid, to check Amesim's interpolation. The main files are not
+%     changed by it.
 %
 %   After writing, the file is read back and every data row is checked
 %   against it.
@@ -63,9 +78,11 @@ function make_amesim_multi1d_table(varargin)
     cfg.sheet      = 1;         % sheet name or number
     cfg.outFile    = '';        % '' = <excel name>_M1D.txt / _MM1D.txt next to the Excel file
     cfg.format     = 'auto';    % 'M1D', 'MM1D', or 'auto' (3 columns -> M1D, 4 -> MM1D)
+    cfg.timeColumn = 'auto';    % time column, never a table input: 'auto' = find it
+                                %   by its header (time, Time_s, t ...), 0 = none, or a number
     cfg.columns    = [];        % sheet columns as [1st 2nd value] (M1D) or
                                 %   [1st 2nd 3rd value] (MM1D) breakpoint;
-                                %   [] = the first 3 or 4 columns in sheet order
+                                %   [] = the first 3 or 4 columns in sheet order (time skipped)
                                 %   e.g. [1 2 3 4] -> col 1 = blocks, col 2 = curves,
                                 %                     col 3 = curve x, col 4 = value
     cfg.tableUnit  = '';        % unit of the table value, e.g. 'kg/s' ('' = none)
@@ -77,6 +94,13 @@ function make_amesim_multi1d_table(varargin)
     cfg.signals    = true;      % also write one time table per input + expected output
     cfg.simTime    = [];        % total simulation time [s];   [] = ask when run
     cfg.nIntervals = [];        % number of intervals;         [] = ask when run
+    cfg.rowOrder   = 'sheet';   % order the rows are played: 'sheet' | 'snake'
+                                %   (snake: one input changes by one breakpoint at a time)
+    %% ---- optional off-grid test (offGridPoints = 0 switches it off) ----
+    cfg.offGridPoints = 0;      % random test points between breakpoints; 0 = off
+    cfg.offGridAxes = [];       % breakpoints moved off-grid ([] = all), e.g. [2 3]
+                                %   keeps breakpoint 1 on its values
+    cfg.offGridSeed = 1;        % random seed, so the test points are repeatable
     %% =============================================================
 
     cfg = apply_overrides(cfg, varargin);
@@ -116,7 +140,14 @@ function make_amesim_multi1d_table(varargin)
 
     % 6) Input signals: one 1D table (x = time) per input, same time vector
     if cfg.signals
-        write_signals(cfg, D(:, 1:end-1), D(:, end), names(1:end-1), names{end});
+        [simTime, nInt] = write_signals(cfg, D(:, 1:end-1), D(:, end), names(1:end-1), names{end});
+
+        % 7) Optional off-grid test points (cfg.offGridPoints = 0 skips this)
+        if cfg.offGridPoints > 0 && ~isempty(simTime)
+            [Xo, yo] = offgrid_points(cfg, rows(:, 1:end-1), @(Q) interp_multi1d(rows, Q));
+            write_signal_set(cfg, 'offgrid_', Xo, yo, names(1:end-1), names{end}, ...
+                             simTime, nInt, 'off-grid test points');
+        end
     end
 end
 
@@ -175,16 +206,42 @@ function [data, headers] = read_sheet(file, sheet)
     end
 end
 
+function timeCol = find_time_column(headers, setting)
+% Column number of the time column ([] if none). 'auto' looks for a header
+% such as time, Time_s, Time [s], t, t_s; 0 or [] = no time column.
+    if ischar(setting) && strcmpi(setting, 'auto')
+        pattern = '^\s*(t|time|zeit|temps|tiempo)\s*([_\[\(\s].*)?$';
+        timeCol = find(~cellfun(@isempty, regexpi(headers, pattern, 'once')));
+        if numel(timeCol) > 1
+            error(['Several columns look like time (%s). Set timeColumn to the ' ...
+                   'right column number.'], strjoin(headers(timeCol), ', '));
+        end
+    elseif isempty(setting) || isequal(setting, 0)
+        timeCol = [];
+    elseif isnumeric(setting) && isscalar(setting) && setting >= 1 && ...
+           setting <= numel(headers) && setting == round(setting)
+        timeCol = setting;
+    else
+        error('timeColumn must be ''auto'', 0 or a column number.');
+    end
+    if ~isempty(timeCol)
+        fprintf('Time column: column %d "%s" (not used as a table input).\n', ...
+                timeCol, headers{timeCol});
+    end
+end
+
 function [D, names, cfg] = select_columns(data, headers, cfg)
 % Pick the breakpoint and value columns and decide between M1D and MM1D.
     nCols = size(data, 2);
+    timeCol = find_time_column(headers, cfg.timeColumn);
+    available = setdiff(1:nCols, timeCol, 'stable');
     cols = cfg.columns;
     fmt = upper(cfg.format);
     if strcmp(fmt, 'AUTO')
         if ~isempty(cols)
             nNeeded = numel(cols);
         else
-            nNeeded = nCols;
+            nNeeded = numel(available);
         end
         if nNeeded == 3
             fmt = 'M1D';
@@ -203,13 +260,20 @@ function [D, names, cfg] = select_columns(data, headers, cfg)
             error('format must be ''M1D'', ''MM1D'' or ''auto'', not "%s".', cfg.format);
     end
     if isempty(cols)
-        cols = 1:nNeeded;
+        if numel(available) < nNeeded
+            error('%s needs %d data columns, the sheet has %d.', fmt, nNeeded, numel(available));
+        end
+        cols = available(1:nNeeded);
     end
     if numel(cols) ~= nNeeded
         error('%s needs %d columns in columns, got %d.', fmt, nNeeded, numel(cols));
     end
     if any(cols < 1 | cols > nCols)
         error('The sheet has %d columns; check the columns setting.', nCols);
+    end
+    if ~isempty(timeCol) && any(cols == timeCol)
+        error(['Column %d is the time column and cannot be a table input or value. ' ...
+               'Check the columns setting, or set timeColumn = 0.'], timeCol);
     end
     if ~isempty(cfg.axisUnits) && numel(cfg.axisUnits) ~= nNeeded - 1
         error('axisUnits must have %d entries for %s.', nNeeded - 1, fmt);
@@ -488,29 +552,56 @@ end
 %  6) INPUT SIGNALS
 %  =========================================================================
 
-function write_signals(cfg, X, y, inputNames, valueName)
+function [simTime, nInt] = write_signals(cfg, X, y, inputNames, valueName)
 % One 1D table per input (x = time, y = input value) plus one for the
 % expected output, all sampled on the Amesim print grid
 %     t_i = i * simTime / nIntervals,   i = 0 ... nIntervals.
-% The data rows are spread over those print points in sheet order, each
-% row held for an equal number of points (+-1), so at every print time all
-% inputs equal one data row and the table output equals that row's value.
+% The data rows are spread over those print points (in sheet or snake
+% order), each row held for an equal number of points (+-1), so at every
+% print time all inputs equal one data row and the table output equals
+% that row's value. Returns the run parameters ([] if skipped).
     M = size(X, 1);
+    switch lower(cfg.rowOrder)
+        case 'sheet'
+            order = (1:M)';
+        case 'snake'
+            order = snake_order(X);
+        otherwise
+            error('rowOrder must be ''sheet'' or ''snake'', not "%s".', cfg.rowOrder);
+    end
     [simTime, nInt] = ask_run_parameters(cfg, M);
     if isempty(simTime)
         fprintf('Input signals skipped (no simulation time given).\n\n');
         return
     end
+    write_signal_set(cfg, '', X(order, :), y(order), inputNames, valueName, ...
+                     simTime, nInt, 'data rows');
+    if strcmpi(cfg.rowOrder, 'snake')
+        fprintf(['  Rows played in snake order: consecutive rows differ in one ' ...
+                 'input by one breakpoint.\n\n']);
+    end
+end
+
+function write_signal_set(cfg, tag, X, y, inputNames, valueName, simTime, nInt, what)
+% Write the signal files <table>_<tag>input<k>_<name>.txt and
+% <table>_<tag>expected_<value>.txt for the points X (rows) and outputs y,
+% spread over the print grid, then read them back to check them.
+    M = size(X, 1);
     nPts = nInt + 1;
     if nPts < M
-        error(['%d intervals give %d print points, fewer than the %d data rows, ' ...
-               'so some rows would never be applied. Use at least %d intervals.'], ...
-              nInt, nPts, M, M - 1);
+        error(['%d intervals give %d print points, fewer than the %d %s, ' ...
+               'so some would never be applied. Use at least %d intervals.'], ...
+              nInt, nPts, M, what, M - 1);
     end
     t = (0:nInt)' * (simTime / nInt);
-    row = floor((0:nInt)' * M / nPts) + 1;         % data row applied at each print point
-    held = accumarray(row, 1, [M 1]);               % print points per data row
+    row = floor((0:nInt)' * M / nPts) + 1;         % point applied at each print time
+    held = accumarray(row, 1, [M 1]);               % print points per point
 
+    if isempty(tag)
+        label = {'Input signal', 'Expected output', 'Input signals'};
+    else
+        label = {'Off-grid test input', 'Off-grid expected output', 'Off-grid test signals'};
+    end
     [p, base] = fileparts(cfg.outFile);
     numFmt = sprintf('%%.%dg', cfg.precision);
     nIn = numel(inputNames);
@@ -520,16 +611,16 @@ function write_signals(cfg, X, y, inputNames, valueName)
         if numel(cfg.axisUnits) >= k
             unit = cfg.axisUnits{k};
         end
-        files{k} = fullfile(p, sprintf('%s_input%d_%s.txt', base, k, ...
+        files{k} = fullfile(p, sprintf('%s_%sinput%d_%s.txt', base, tag, k, ...
                                        safe_name(inputNames{k})));
         write_signal(files{k}, t, X(row, k), numFmt, unit, ...
-            sprintf('Input signal %d of %s.txt: %s vs time', k, base, inputNames{k}));
+            sprintf('%s %d of %s.txt: %s vs time', label{1}, k, base, inputNames{k}));
     end
-    files{end} = fullfile(p, sprintf('%s_expected_%s.txt', base, safe_name(valueName)));
+    files{end} = fullfile(p, sprintf('%s_%sexpected_%s.txt', base, tag, safe_name(valueName)));
     write_signal(files{end}, t, y(row), numFmt, cfg.tableUnit, ...
-        sprintf('Expected output of %s.txt: %s vs time', base, valueName));
+        sprintf('%s of %s.txt: %s vs time', label{2}, base, valueName));
 
-    % Check: every file has the same time vector and the right row values
+    % Check: every file has the same time vector and the right values
     cols = [X y];
     relTol = 10^(1 - cfg.precision);
     for k = 1:numel(files)
@@ -544,18 +635,43 @@ function write_signals(cfg, X, y, inputNames, valueName)
         end
     end
 
-    fprintf('Input signals (1D tables, x = time [s]), %d points each, same time vector:\n', nPts);
+    fprintf('%s (1D tables, x = time [s]), %d points each, same time vector:\n', label{3}, nPts);
     fprintf('  %s\n', files{:});
     fprintf('  Amesim run parameters: final time = %g s, %d intervals (print interval %g s).\n', ...
             simTime, nInt, simTime / nInt);
     if min(held) == max(held)
-        fprintf('  Each of the %d data rows is held for %d print point(s) (%g s).\n\n', ...
-                M, held(1), held(1) * simTime / nInt);
+        fprintf('  Each of the %d %s is held for %d print point(s) (%g s).\n\n', ...
+                M, what, held(1), held(1) * simTime / nInt);
     else
-        fprintf(['  Each of the %d data rows is held for %d or %d print points ' ...
+        fprintf(['  Each of the %d %s is held for %d or %d print points ' ...
                  '(use %d or %d intervals for an equal hold).\n\n'], ...
-                M, min(held), max(held), M * floor(nPts / M) - 1, M * ceil(nPts / M) - 1);
+                M, what, min(held), max(held), M * floor(nPts / M) - 1, M * ceil(nPts / M) - 1);
     end
+end
+
+function order = snake_order(X)
+% Row order that sweeps the breakpoints like a snake (boustrophedon): the
+% 1st breakpoint is the slowest, the last the fastest, and each input runs
+% up and down alternately, so consecutive rows differ in one input by one
+% breakpoint. Works for full grids and for curves with different points.
+% G is the position of each row's prefix (columns 1..k) along the snake;
+% column k runs backwards whenever the prefix before it has an odd position.
+    [M, N] = size(X);
+    G = zeros(M, 1);
+    for k = 1:N
+        [~, ~, valRank] = unique(X(:, k));
+        [~, ~, r] = unique([G valRank(:)], 'rows');       % rank inside (prefix, value)
+        r = r(:);
+        first = accumarray(G + 1, r, [], @min);
+        last = accumarray(G + 1, r, [], @max);
+        g = r - first(G + 1);                            % 0-based position in its group
+        n = last(G + 1) - first(G + 1) + 1;              % values in its group
+        back = mod(G, 2) == 1;
+        g(back) = n(back) - 1 - g(back);
+        [~, ~, G] = unique([G g], 'rows');
+        G = G(:) - 1;
+    end
+    [~, order] = sort(G);                                 % stable: duplicates keep sheet order
 end
 
 function [simTime, nInt] = ask_run_parameters(cfg, M)
@@ -615,5 +731,101 @@ function s = safe_name(name)
     s = regexprep(s, '^_+|_+$', '');
     if isempty(s)
         s = 'signal';
+    end
+end
+
+
+%% =========================================================================
+%  7) OFF-GRID TEST POINTS  (optional: cfg.offGridPoints = 0 skips all of it)
+%  =========================================================================
+
+function [Xo, yo] = offgrid_points(cfg, X, evaluate)
+% Random test points between the breakpoints and the table output there.
+% X holds the data rows (one column per breakpoint), EVALUATE maps query
+% points to table values (NaN outside the table). Axes not listed in
+% cfg.offGridAxes take random values of their own breakpoints.
+    n = cfg.offGridPoints;
+    N = size(X, 2);
+    offAxes = cfg.offGridAxes;
+    if isempty(offAxes)
+        offAxes = 1:N;
+    end
+    lo = min(X, [], 1);
+    hi = max(X, [], 1);
+    try                                           % repeatable, and leave the
+        saved = rng;                              % caller's random state alone
+        rng(cfg.offGridSeed);
+    catch
+        saved = rand('state');                    %#ok<RAND>
+        rand('state', cfg.offGridSeed);           %#ok<RAND>
+    end
+    Xo = zeros(0, N);
+    yo = zeros(0, 1);
+    for attempt = 1:100
+        m = n - size(Xo, 1);
+        if m <= 0
+            break
+        end
+        Q = zeros(m, N);
+        for k = 1:N
+            if any(offAxes == k)
+                Q(:, k) = lo(k) + rand(m, 1) * (hi(k) - lo(k));
+            else
+                values = unique(X(:, k));
+                Q(:, k) = values(randi(numel(values), m, 1));
+            end
+        end
+        v = evaluate(Q);
+        ok = ~isnan(v);                           % drop points outside the table
+        Xo = [Xo; Q(ok, :)];                      %#ok<AGROW>
+        yo = [yo; v(ok)];                         %#ok<AGROW>
+    end
+    if isstruct(saved)
+        rng(saved);
+    else
+        rand('state', saved);                     %#ok<RAND>
+    end
+    if size(Xo, 1) < n
+        warning('Only %d of %d off-grid test points fall inside the table.', size(Xo, 1), n);
+    end
+end
+
+function v = interp_multi1d(rows, Q)
+% Table value at the rows of Q ([y x] or [z y x]; NaN outside), interpolated
+% as described in the Amesim docs: along x inside each curve first, then
+% linearly between the two neighbouring curves (and, for MM1D, between the
+% two neighbouring z blocks).
+    v = nan(size(Q, 1), 1);
+    for r = 1:size(Q, 1)
+        v(r) = interp_level(rows, Q(r, :), 1);
+    end
+end
+
+function v = interp_level(rows, q, level)
+    nLevels = size(rows, 2) - 1;
+    if level == nLevels                           % inside one curve: along x
+        xs = rows(:, level);
+        if numel(xs) == 1
+            v = rows(1, end);
+            if q(level) ~= xs
+                v = NaN;
+            end
+        else
+            v = interp1(xs, rows(:, end), q(level), 'linear');
+        end
+        return
+    end
+    keys = unique(rows(:, level));
+    z = q(level);
+    if z < keys(1) || z > keys(end)
+        v = NaN;
+        return
+    end
+    i = find(keys <= z, 1, 'last');
+    v = interp_level(rows(rows(:, level) == keys(i), :), q, level + 1);
+    if keys(i) ~= z                               % between two slices
+        v2 = interp_level(rows(rows(:, level) == keys(i + 1), :), q, level + 1);
+        w = (z - keys(i)) / (keys(i + 1) - keys(i));
+        v = (1 - w) * v + w * v2;
     end
 end

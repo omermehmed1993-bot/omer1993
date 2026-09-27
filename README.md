@@ -1,8 +1,17 @@
-# Amesim ND table maker (MATLAB)
+# Amesim table makers (MATLAB)
 
-`make_amesim_table.m` is a single file that converts Excel column data
-(one row per point: input columns, then the output column) into a
-Simcenter Amesim table file (`# Table format: 1D` … `8D`).
+Three single-file MATLAB tools (edit the settings block at the top, press **Run**):
+
+| File | Makes |
+| --- | --- |
+| `make_amesim_table.m` | ND tables (`# Table format: 1D` … `8D`) from Excel column data, plus input-signal tables |
+| `make_amesim_multi1d_table.m` | M1D (`T1D`) and MM1D (`T3D`) tables, plus input-signal tables |
+| `make_amesim_mission_signals.m` | input-signal tables from a real mission profile, checked against a table |
+
+## ND tables
+
+`make_amesim_table.m` converts Excel column data (one row per point: input
+columns, then the output column) into a Simcenter Amesim table file.
 
 1. Open `make_amesim_table.m` and edit the **USER SETTINGS** block at the top.
 2. Press **Run** (F5). If `excelFile` is empty, a file dialog asks for the data file.
@@ -15,8 +24,8 @@ make_amesim_table('excelFile', 'Example.xlsx', 'tableUnit', 'kg/s')
 
 **Column order = breakpoint order in the file:** the 1st input column is the
 1st breakpoint (axis X1, written first), the 2nd column is X2, and so on; the
-last column is the value. Reorder with `inputColumns` if needed. The data must contain every combination of the input values
-(a full grid), unless `fillMissing` is set. After writing, the file is read
+last column is the value; a time column is skipped. Reorder with `inputColumns` if needed. The data must contain every combination of the input
+values (a full grid), unless `fillMissing` is set. After writing, the file is read
 back and every data row is checked against it.
 
 
@@ -47,6 +56,37 @@ of rows (the tool suggests values).
 
 Set `simTime` / `nIntervals` in the settings block (or on the command line) to
 skip the question.
+
+| Setting | Meaning | Default |
+| --- | --- | --- |
+| `rowOrder` | `'sheet'`, or `'snake'`: rows are played so that consecutive rows differ in one input by one breakpoint (smaller jumps) | `'sheet'` |
+| `timeColumn` | a time column in the sheet is found by its header (`time`, `Time_s`, `Time [s]`, `t` …) and never used as a table input; or give its column number, or `0` for none | `'auto'` |
+
+### Optional off-grid test
+
+`offGridPoints = 0` (the default) switches it off completely: nothing else in
+the output changes. With `offGridPoints > 0` the tools also write
+`<table>_offgrid_input<k>_<name>.txt` and `<table>_offgrid_expected_<value>.txt`:
+random points between the breakpoints with the linearly interpolated table
+output (for M1D/MM1D: along x inside the curves, then between curves), on the
+same time grid, to check that Amesim interpolates as expected.
+`offGridAxes` limits which breakpoints move off-grid (e.g. `[2 3 4 5]` keeps
+FlightStage on its values) and `offGridSeed` makes the points repeatable.
+
+## Mission profiles
+
+`make_amesim_mission_signals.m` (same style: settings block, press **Run**)
+turns a real profile into input signals: an Excel sheet with a time column and
+one column per table input, in breakpoint order.
+
+```matlab
+make_amesim_mission_signals('excelFile', 'mission.xlsx', 'tableFile', 'examples/FADEC_FLOW_Demand_5D.txt')
+```
+
+It writes one 1D table per input (x = time). With `tableFile` set (an ND, M1D
+or MM1D table) it also checks every input against the table's breakpoint
+ranges, reports where the profile leaves them, and, if the whole profile is
+inside, writes the expected table output along the mission.
 
 ## M1D and MM1D tables
 
