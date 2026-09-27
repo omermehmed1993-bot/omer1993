@@ -18,8 +18,6 @@ The input columns become axes X1, X2, … in column order (reorder them with
 (a full grid), unless `fillMissing` is set. After writing, the file is read
 back and every data row is checked against it.
 
-`examples/FADEC_FLOW_Demand_5D.txt` is the 5D table made from `Example.xlsx`
-(4725 rows: FlightStage × Altitude × Mach × ISA dT × N_HP → corrected mass flow).
 
 ## M1D and MM1D tables
 
@@ -37,3 +35,16 @@ make_amesim_multi1d_table('excelFile', 'data.xlsx', 'columns', [5 3 2 6], 'table
 ```
 
 Each (X, Y[, Z]) point must appear only once (see `duplicates`).
+
+## Examples
+
+The `examples/` folder has each input sheet next to the table made from it:
+
+| Input | Command | Output |
+| --- | --- | --- |
+| `Example.xlsx` (5 inputs, 4725 rows) | `make_amesim_table('excelFile','examples/Example.xlsx','tableUnit','kg/s')` | `FADEC_FLOW_Demand_5D.txt` |
+| `RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/RPM_DP_FlowRate_MATLAB_Example.xlsx','columns',[2 1 3],'tableUnit','L/min','axisUnits',{'bar','rev/min'})` | `RPM_DP_FlowRate_M1D.txt` |
+| `FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx','columns',[3 2 1 4],'tableUnit','L/min','axisUnits',{'bar','rev/min',''})` | `FlightCondition_RPM_DP_FlowRate_MM1D.txt` |
+
+In the M1D/MM1D examples each curve is flow against dP (X) at one RPM (Y),
+with one set of curves per flight condition (Z) in the MM1D table.
