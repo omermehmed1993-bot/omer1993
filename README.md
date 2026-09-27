@@ -31,27 +31,34 @@ back and every data row is checked against it.
 
 ## Input signals (time tables) for the lookup table
 
-When run, both tools **ask for the Amesim total simulation time and number of
-intervals** (a dialog, or command-window prompts), then write next to the table
-one **1D table per input** with **time as the x axis** and that input as y,
-plus one for the expected output:
+Both tools write, next to the table, one **1D table per input** with **time
+as the x axis** and that input as y, plus one for the expected output:
 
 ```
 <table>_input1_<name>.txt  ...  <table>_inputN_<name>.txt   (# Table format: 1D, x = time [s])
 <table>_expected_<value>.txt                                 (x = time, y = data output)
 ```
 
-All files are sampled on the Amesim print grid `t = 0 : T/N : T` (N intervals,
-N + 1 points). The data rows are spread over these points in sheet order, each
-row held for an equal number of points, so at every print time all inputs equal
-one data row and the table output equals that row's value. N must be at least
-rows - 1; for an equal hold on every row use N + 1 = a multiple of the number
-of rows (the tool suggests values).
+All signal files share one time vector, taken from:
+
+- **the sheet's time column**, if it has one (header `time`, `Time_s`,
+  `Time [s]`, `t` …): every row is applied at its own time and nothing is
+  asked. The tool prints the matching Amesim final time and print interval.
+- **the Amesim print grid** otherwise: the tools ask for the **total
+  simulation time and number of intervals** (a dialog, or command-window
+  prompts) and sample `t = 0 : T/N : T` (N intervals, N + 1 points). The data
+  rows are spread over these points, each row held for an equal number of
+  points. N must be at least rows - 1; for an equal hold use N + 1 = a multiple
+  of the number of rows (the tool suggests values).
+
+At every row time all inputs equal one data row, so the table output equals
+that row's value.
 
 | Setting | Meaning | Default |
 | --- | --- | --- |
-| `simTime` | total simulation time [s] (Amesim final time) | `[]` = ask when run |
-| `nIntervals` | number of intervals (Amesim) | `[]` = ask when run |
+| `signalTime` | `'auto'` = sheet time column if there is one, else grid; `'sheet'`; `'grid'` | `'auto'` |
+| `simTime` | grid only: total simulation time [s] (Amesim final time) | `[]` = ask when run |
+| `nIntervals` | grid only: number of intervals (Amesim) | `[]` = ask when run |
 | `signals` | write the signal files | `true` |
 
 Set `simTime` / `nIntervals` in the settings block (or on the command line) to
@@ -59,8 +66,8 @@ skip the question.
 
 | Setting | Meaning | Default |
 | --- | --- | --- |
-| `rowOrder` | `'sheet'`, or `'snake'`: rows are played so that consecutive rows differ in one input by one breakpoint (smaller jumps) | `'sheet'` |
-| `timeColumn` | a time column in the sheet is found by its header (`time`, `Time_s`, `Time [s]`, `t` …) and never used as a table input; or give its column number, or `0` for none | `'auto'` |
+| `rowOrder` | grid only: `'sheet'`, or `'snake'`: rows are played so that consecutive rows differ in one input by one breakpoint (smaller jumps) | `'sheet'` |
+| `timeColumn` | a time column in the sheet is found by its header (`time`, `Time_s`, `Time [s]`, `t` …), never used as a table input, and gives the signal time; or give its column number, or `0` for none | `'auto'` |
 
 ### Optional off-grid test
 
@@ -124,6 +131,7 @@ The `examples/` folder has each input sheet next to the table and the input-sign
 | Input | Command | Output |
 | --- | --- | --- |
 | `Example.xlsx` (5 inputs, 4725 rows) | `make_amesim_table('excelFile','examples/Example.xlsx','tableUnit','kg/s')` | `FADEC_FLOW_Demand_5D.txt` |
+| `Example_with_time.xlsx` (time column + 5 inputs) | `make_amesim_table('excelFile','examples/Example_with_time.xlsx','tableUnit','kg/s')`: signals at the sheet times 0.1 … 472.5 s, no questions | same 5D table + signals |
 | `RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/RPM_DP_FlowRate_MATLAB_Example.xlsx','tableUnit','L/min','axisUnits',{'rev/min','bar'})` | `RPM_DP_FlowRate_M1D.txt` |
 | `FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx','tableUnit','L/min','axisUnits',{'','rev/min','bar'})` | `FlightCondition_RPM_DP_FlowRate_MM1D.txt` |
 

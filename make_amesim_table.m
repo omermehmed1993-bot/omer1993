@@ -30,22 +30,24 @@ function make_amesim_table(varargin)
 %     ...
 %
 %   INPUT SIGNALS  (cfg.signals = true)
-%     When run, the code ASKS for the Amesim total simulation time and number
-%     of intervals (leave simTime / nIntervals empty), then writes for every
-%     input a 1D table <table>_input<k>_<name>.txt with x = time [s] and
-%     y = that input, plus <table>_expected_<value>.txt (x = time, y = data
-%     output). All are sampled on the Amesim print grid t = 0 : T/N : T; the
-%     data rows are spread over those points in sheet order, each row held
-%     for an equal number of points. At every print time all inputs equal one
-%     data row, so the table output equals that row's value.
+%     For every input a 1D table <table>_input<k>_<name>.txt is written with
+%     x = time [s] and y = that input, plus <table>_expected_<value>.txt
+%     (x = time, y = data output), all on the same time vector:
+%     - sheet has a time column: every row is applied at its own time from
+%       that column, nothing is asked (signalTime = 'auto' or 'sheet');
+%     - no time column: the code ASKS for the Amesim total simulation time
+%       and number of intervals and samples the print grid t = 0 : T/N : T,
+%       each row held for an equal number of print points ('grid').
+%     At every row time all inputs equal one data row, so the table output
+%     equals that row's value.
 %     rowOrder = 'snake' plays the rows so that consecutive rows differ in
 %     one input by one breakpoint (smaller jumps than sheet order).
 %
 %   TIME COLUMN
 %     A time column in the sheet (header time, Time_s, Time [s], t ...) is
-%     found automatically (timeColumn = 'auto') and never used as a table
-%     input or value. For real mission profiles use
-%     make_amesim_mission_signals.m.
+%     found automatically (timeColumn = 'auto'), never used as a table input
+%     or value, and gives the time of the input signals. For real mission
+%     profiles use make_amesim_mission_signals.m.
 %
 %   OFF-GRID TEST  (optional, offGridPoints = 0 switches it off completely)
 %     offGridPoints > 0 also writes <table>_offgrid_input<k>_<name>.txt and
@@ -75,8 +77,10 @@ function make_amesim_table(varargin)
     cfg.precision    = 15;        % significant digits written to the file
     %% ---- input signals: 1D tables (x = time) that drive the table inputs ----
     cfg.signals      = true;      % also write one time table per input + expected output
-    cfg.simTime      = [];        % total simulation time [s];   [] = ask when run
-    cfg.nIntervals   = [];        % number of intervals;         [] = ask when run
+    cfg.signalTime   = 'auto';    % time of the signals: 'auto' = the sheet's time column
+                                  %   if there is one, else 'grid'; or 'sheet' | 'grid'
+    cfg.simTime      = [];        % 'grid' only: total simulation time [s]; [] = ask
+    cfg.nIntervals   = [];        % 'grid' only: number of intervals;        [] = ask
     cfg.rowOrder     = 'sheet';   % order the rows are played: 'sheet' | 'snake'
                                   %   (snake: one input changes by one breakpoint at a time)
     %% ---- optional off-grid test (offGridPoints = 0 switches it off) ----
@@ -99,7 +103,7 @@ function make_amesim_table(varargin)
         cfg.excelFile = fullfile(p, f);
     end
     [data, headers] = read_sheet(cfg.excelFile, cfg.sheet);
-    [X, y, axisNames, valueName] = select_columns(data, headers, cfg);
+    [X, y, axisNames, valueName, tSheet] = select_columns(data, headers, cfg);
     N = size(X, 2);
 
     % 2) Arrange the rows on a regular grid ----------------------------------
@@ -122,13 +126,12 @@ function make_amesim_table(varargin)
 
     % 6) Input signals: one 1D table (x = time) per input, same time vector
     if cfg.signals
-        [simTime, nInt] = write_signals(cfg, X, y, axisNames, valueName);
+        timing = write_signals(cfg, X, y, axisNames, valueName, tSheet);
 
         % 7) Optional off-grid test points (cfg.offGridPoints = 0 skips this)
-        if cfg.offGridPoints > 0 && ~isempty(simTime)
+        if cfg.offGridPoints > 0 && ~isempty(timing)
             [Xo, yo] = offgrid_points(cfg, X, @(Q) interp_nd(axesValues, U, Q));
-            write_signal_set(cfg, 'offgrid_', Xo, yo, axisNames, valueName, ...
-                             simTime, nInt, 'off-grid test points');
+            write_offgrid_set(cfg, timing, Xo, yo, axisNames, valueName);
         end
     end
 end
@@ -212,8 +215,9 @@ function timeCol = find_time_column(headers, setting)
     end
 end
 
-function [X, y, axisNames, valueName] = select_columns(data, headers, cfg)
-% Split the sheet into input columns X (one per axis) and the output y.
+function [X, y, axisNames, valueName, t] = select_columns(data, headers, cfg)
+% Split the sheet into input columns X (one per axis), the output y and
+% the time column t ([] if the sheet has none).
     nCols = size(data, 2);
     timeCol = find_time_column(headers, cfg.timeColumn);
     available = setdiff(1:nCols, timeCol, 'stable');
@@ -237,11 +241,16 @@ function [X, y, axisNames, valueName] = select_columns(data, headers, cfg)
         error('Amesim tables support at most 8 inputs, got %d.', numel(inCols));
     end
 
-    used = data(:, cols);
-    used = used(~all(isnan(used), 2), :);          % drop empty rows
+    used = data(:, [cols timeCol]);
+    used = used(~all(isnan(used(:, 1:numel(cols))), 2), :);   % drop empty rows
     bad = find(any(isnan(used), 2), 1);
     if ~isempty(bad)
         error('Data row %d has an empty or non-numeric cell.', bad);
+    end
+    t = [];
+    if ~isempty(timeCol)
+        t = used(:, end);
+        used = used(:, 1:end-1);
     end
     X = used(:, 1:end-1);
     y = used(:, end);
@@ -548,40 +557,77 @@ end
 %  6) INPUT SIGNALS
 %  =========================================================================
 
-function [simTime, nInt] = write_signals(cfg, X, y, inputNames, valueName)
+function timing = write_signals(cfg, X, y, inputNames, valueName, tSheet)
 % One 1D table per input (x = time, y = input value) plus one for the
-% expected output, all sampled on the Amesim print grid
-%     t_i = i * simTime / nIntervals,   i = 0 ... nIntervals.
-% The data rows are spread over those print points (in sheet or snake
-% order), each row held for an equal number of points (+-1), so at every
-% print time all inputs equal one data row and the table output equals
-% that row's value. Returns the run parameters ([] if skipped).
-    M = size(X, 1);
-    switch lower(cfg.rowOrder)
+% expected output, all on the same time vector. The time comes from
+%   'sheet': the sheet's time column; every row is applied at its own time;
+%   'grid' : the Amesim print grid t = 0 : simTime/nIntervals : simTime
+%            (asked when run); the rows (sheet or snake order) are spread
+%            over the print points, each held for an equal number of points.
+% cfg.signalTime = 'auto' uses the sheet time when the sheet has a time
+% column. Returns the timing used ([] if skipped), for the off-grid test.
+    mode = lower(cfg.signalTime);
+    if strcmp(mode, 'auto')
+        if isempty(tSheet)
+            mode = 'grid';
+        else
+            mode = 'sheet';
+        end
+    end
+    switch mode
         case 'sheet'
-            order = (1:M)';
-        case 'snake'
-            order = snake_order(X);
+            if isempty(tSheet)
+                error(['signalTime = ''sheet'' needs a time column in the sheet ' ...
+                       '(see timeColumn).']);
+            end
+            % Remove round-off noise such as 472.4000000000389 (12 significant digits)
+            tSheet = arrayfun(@(v) str2double(sprintf('%.12g', v)), tSheet);
+            bad = find(diff(tSheet) <= 0, 1);
+            if ~isempty(bad)
+                error(['The time column must increase from row to row: data row %d has ' ...
+                       't = %g after t = %g. Fix the sheet, or set signalTime = ''grid''.'], ...
+                      bad + 1, tSheet(bad + 1), tSheet(bad));
+            end
+            if strcmpi(cfg.rowOrder, 'snake')
+                fprintf('  rowOrder = ''snake'' ignored: the rows follow the sheet''s time column.\n');
+            end
+            files = write_signal_files(cfg, '', tSheet, X, y, inputNames, valueName);
+            dt = str2double(sprintf('%.12g', min(diff(tSheet))));
+            timing = struct('mode', 'sheet', 't0', tSheet(1), 'dt', dt);
+            print_sheet_timing(files, tSheet);
+        case 'grid'
+            M = size(X, 1);
+            switch lower(cfg.rowOrder)
+                case 'sheet'
+                    order = (1:M)';
+                case 'snake'
+                    order = snake_order(X);
+                otherwise
+                    error('rowOrder must be ''sheet'' or ''snake'', not "%s".', cfg.rowOrder);
+            end
+            [simTime, nInt] = ask_run_parameters(cfg, M);
+            if isempty(simTime)
+                fprintf('Input signals skipped (no simulation time given).\n\n');
+                timing = [];
+                return
+            end
+            timing = struct('mode', 'grid', 'simTime', simTime, 'nInt', nInt);
+            write_grid_set(cfg, '', X(order, :), y(order), inputNames, valueName, ...
+                           timing, 'data rows');
+            if strcmpi(cfg.rowOrder, 'snake')
+                fprintf(['  Rows played in snake order: consecutive rows differ in one ' ...
+                         'input by one breakpoint.\n\n']);
+            end
         otherwise
-            error('rowOrder must be ''sheet'' or ''snake'', not "%s".', cfg.rowOrder);
-    end
-    [simTime, nInt] = ask_run_parameters(cfg, M);
-    if isempty(simTime)
-        fprintf('Input signals skipped (no simulation time given).\n\n');
-        return
-    end
-    write_signal_set(cfg, '', X(order, :), y(order), inputNames, valueName, ...
-                     simTime, nInt, 'data rows');
-    if strcmpi(cfg.rowOrder, 'snake')
-        fprintf(['  Rows played in snake order: consecutive rows differ in one ' ...
-                 'input by one breakpoint.\n\n']);
+            error('signalTime must be ''auto'', ''sheet'' or ''grid'', not "%s".', cfg.signalTime);
     end
 end
 
-function write_signal_set(cfg, tag, X, y, inputNames, valueName, simTime, nInt, what)
-% Write the signal files <table>_<tag>input<k>_<name>.txt and
-% <table>_<tag>expected_<value>.txt for the points X (rows) and outputs y,
-% spread over the print grid, then read them back to check them.
+function write_grid_set(cfg, tag, X, y, inputNames, valueName, timing, what)
+% Spread the points X (rows) with outputs y over the Amesim print grid,
+% each held for an equal number of print points (+-1), and write them.
+    simTime = timing.simTime;
+    nInt = timing.nInt;
     M = size(X, 1);
     nPts = nInt + 1;
     if nPts < M
@@ -592,7 +638,39 @@ function write_signal_set(cfg, tag, X, y, inputNames, valueName, simTime, nInt, 
     t = (0:nInt)' * (simTime / nInt);
     row = floor((0:nInt)' * M / nPts) + 1;         % point applied at each print time
     held = accumarray(row, 1, [M 1]);               % print points per point
+    files = write_signal_files(cfg, tag, t, X(row, :), y(row), inputNames, valueName);
 
+    fprintf('  %s\n', files{:});
+    fprintf('  Amesim run parameters: final time = %g s, %d intervals (print interval %g s).\n', ...
+            simTime, nInt, simTime / nInt);
+    if min(held) == max(held)
+        fprintf('  Each of the %d %s is held for %d print point(s) (%g s).\n\n', ...
+                M, what, held(1), held(1) * simTime / nInt);
+    else
+        fprintf(['  Each of the %d %s is held for %d or %d print points ' ...
+                 '(use %d or %d intervals for an equal hold).\n\n'], ...
+                M, what, min(held), max(held), M * floor(nPts / M) - 1, M * ceil(nPts / M) - 1);
+    end
+end
+
+function write_offgrid_set(cfg, timing, Xo, yo, inputNames, valueName)
+% Off-grid test signals on the same kind of time base as the main signals.
+    if strcmp(timing.mode, 'grid')
+        write_grid_set(cfg, 'offgrid_', Xo, yo, inputNames, valueName, timing, ...
+                       'off-grid test points');
+    else                                           % sheet time: same start and step
+        t = timing.t0 + (0:size(Xo, 1) - 1)' * timing.dt;
+        t = arrayfun(@(v) str2double(sprintf('%.12g', v)), t);
+        files = write_signal_files(cfg, 'offgrid_', t, Xo, yo, inputNames, valueName);
+        fprintf('  %s\n', files{:});
+        fprintf('  One test point every %g s from t = %g s (t = %g ... %g s).\n\n', ...
+                timing.dt, timing.t0, t(1), t(end));
+    end
+end
+
+function files = write_signal_files(cfg, tag, t, V, y, inputNames, valueName)
+% Write <table>_<tag>input<k>_<name>.txt (x = t, y = V(:,k)) and
+% <table>_<tag>expected_<value>.txt (x = t, y = y), then read them back.
     if isempty(tag)
         label = {'Input signal', 'Expected output', 'Input signals'};
     else
@@ -609,40 +687,51 @@ function write_signal_set(cfg, tag, X, y, inputNames, valueName, simTime, nInt, 
         end
         files{k} = fullfile(p, sprintf('%s_%sinput%d_%s.txt', base, tag, k, ...
                                        safe_name(inputNames{k})));
-        write_signal(files{k}, t, X(row, k), numFmt, unit, ...
+        write_signal(files{k}, t, V(:, k), numFmt, unit, ...
             sprintf('%s %d of %s.txt: %s vs time', label{1}, k, base, inputNames{k}));
     end
     files{end} = fullfile(p, sprintf('%s_%sexpected_%s.txt', base, tag, safe_name(valueName)));
-    write_signal(files{end}, t, y(row), numFmt, cfg.tableUnit, ...
+    write_signal(files{end}, t, y, numFmt, cfg.tableUnit, ...
         sprintf('%s of %s.txt: %s vs time', label{2}, base, valueName));
 
     % Check: every file has the same time vector and the right values
-    cols = [X y];
+    cols = [V y];
     relTol = 10^(1 - cfg.precision);
     for k = 1:numel(files)
         lines = regexp(fileread(files{k}), '\r?\n', 'split');
         lines = lines(~strncmp(strtrim(lines), '#', 1));
         tv = reshape(sscanf(strjoin(lines, ' '), '%f'), 2, [])';
-        want = cols(row, k);
-        if size(tv, 1) ~= nPts || ...
+        if size(tv, 1) ~= numel(t) || ...
            any(abs(tv(:, 1) - t) > relTol * max(1, abs(t))) || ...
-           any(abs(tv(:, 2) - want) > relTol * max(1, abs(want)))
+           any(abs(tv(:, 2) - cols(:, k)) > relTol * max(1, abs(cols(:, k))))
             error('Check failed: signal file "%s" does not match the data.', files{k});
         end
     end
+    fprintf('%s (1D tables, x = time [s]), %d points each, same time vector:\n', ...
+            label{3}, numel(t));
+end
 
-    fprintf('%s (1D tables, x = time [s]), %d points each, same time vector:\n', label{3}, nPts);
+function print_sheet_timing(files, t)
+% Summary for signals that use the sheet's own time column.
     fprintf('  %s\n', files{:});
-    fprintf('  Amesim run parameters: final time = %g s, %d intervals (print interval %g s).\n', ...
-            simTime, nInt, simTime / nInt);
-    if min(held) == max(held)
-        fprintf('  Each of the %d %s is held for %d print point(s) (%g s).\n\n', ...
-                M, what, held(1), held(1) * simTime / nInt);
+    dt = min(diff(t));
+    fprintf('  Time from the sheet: every row applied at its own time, t = %g ... %g s.\n', ...
+            t(1), t(end));
+    k = t / dt;
+    if all(abs(k - round(k)) < 1e-6)
+        fprintf(['  Amesim run parameters: final time = %g s, print interval %g s ' ...
+                 '(%d intervals): every row time is a print time.\n'], ...
+                t(end), dt, round(t(end) / dt));
     else
-        fprintf(['  Each of the %d %s is held for %d or %d print points ' ...
-                 '(use %d or %d intervals for an equal hold).\n\n'], ...
-                M, what, min(held), max(held), M * floor(nPts / M) - 1, M * ceil(nPts / M) - 1);
+        fprintf(['  Amesim run parameters: final time = %g s; use a print interval that ' ...
+                 'divides the row times (smallest time step %g s).\n'], t(end), dt);
     end
+    if t(1) > 0
+        fprintf(['  Note: the first row is at t = %g s. Between 0 and %g s Amesim holds or ' ...
+                 'extrapolates the input tables (see the table source settings).\n'], ...
+                t(1), t(1));
+    end
+    fprintf('\n');
 end
 
 function order = snake_order(X)
