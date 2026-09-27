@@ -45,6 +45,14 @@ function make_amesim_multi1d_table(varargin)
 %     (Amesim numbers the unit lines the other way round: axis1_unit is X,
 %      axis2_unit is Y, axis3_unit is Z. The code takes care of that.)
 %
+%   INPUT SIGNALS  (cfg.signals = true)
+%     For every input a 1D table <table>_input<k>_<name>.txt is also written,
+%     x = time [s], y = that input column, plus <table>_expected_<value>.txt
+%     (x = time, y = the data output). All share one time vector: sheet row k
+%     is at t = (k-1)*simTime/(rows-1), so in Amesim these tables drive the
+%     lookup-table inputs and the output reproduces the data. Set simTime and
+%     nIncrements to the final time and number of print increments you use.
+%
 %   After writing, the file is read back and every data row is checked
 %   against it.
 
@@ -63,6 +71,10 @@ function make_amesim_multi1d_table(varargin)
     cfg.duplicates = 'error';   % same point twice: 'error' | 'mean' | 'first' | 'last'
     cfg.tolerance  = 1e-9;      % merge values that differ only by round-off
     cfg.precision  = 15;        % significant digits written to the file
+    %% ---- input signals: 1D tables (x = time) that drive the table inputs ----
+    cfg.signals    = true;      % also write one time table per input + expected output
+    cfg.simTime    = [];        % Amesim final time [s]; [] = 1 s per data row
+    cfg.nIncrements = [];       % Amesim number of print increments; [] = one per data row
     %% =============================================================
 
     cfg = apply_overrides(cfg, varargin);
@@ -99,6 +111,11 @@ function make_amesim_multi1d_table(varargin)
 
     % 5) Summary --------------------------------------------------------------
     print_summary(cfg, rows, names, size(D, 1), info);
+
+    % 6) Input signals: one 1D table (x = time) per input, same time vector
+    if cfg.signals
+        write_signals(cfg, D(:, 1:end-1), D(:, end), names(1:end-1), names{end});
+    end
 end
 
 
@@ -462,5 +479,106 @@ function cfg = apply_overrides(cfg, args)
     end
     if ischar(cfg.axisUnits)
         cfg.axisUnits = {cfg.axisUnits};
+    end
+end
+
+%% =========================================================================
+%  6) INPUT SIGNALS
+%  =========================================================================
+
+function write_signals(cfg, X, y, inputNames, valueName)
+% One 1D table per input (x = time, y = that input column) plus one for the
+% expected output, all on the SAME time vector so the inputs stay in sync:
+% sheet row k is at t = (k-1)*step, with step = simTime/(rows-1).
+% At t = t_k every input equals row k, so the lookup table gives Y of row k.
+    M = size(X, 1);
+    if M < 2
+        error('Input signals need at least 2 data rows.');
+    end
+    simTime = cfg.simTime;
+    if isempty(simTime)
+        simTime = M - 1;                          % 1 s per row
+    end
+    nInc = cfg.nIncrements;
+    if isempty(nInc)
+        nInc = M - 1;                             % one print increment per row
+    end
+    if ~(simTime > 0) || nInc < 1 || nInc ~= round(nInc)
+        error('simTime must be > 0 and nIncrements a positive whole number.');
+    end
+    step = simTime / (M - 1);
+    t = (0:M-1)' * step;
+
+    [p, base] = fileparts(cfg.outFile);
+    numFmt = sprintf('%%.%dg', cfg.precision);
+    nIn = numel(inputNames);
+    files = cell(1, nIn + 1);
+    for k = 1:nIn
+        unit = '';
+        if numel(cfg.axisUnits) >= k
+            unit = cfg.axisUnits{k};
+        end
+        files{k} = fullfile(p, sprintf('%s_input%d_%s.txt', base, k, ...
+                                       safe_name(inputNames{k})));
+        write_signal(files{k}, t, X(:, k), numFmt, unit, ...
+            sprintf('Input signal %d of %s.txt: %s vs time', k, base, inputNames{k}));
+    end
+    files{end} = fullfile(p, sprintf('%s_expected_%s.txt', base, safe_name(valueName)));
+    write_signal(files{end}, t, y, numFmt, cfg.tableUnit, ...
+        sprintf('Expected output of %s.txt: %s vs time', base, valueName));
+
+    % Check: every file has the same time vector and reproduces its column
+    cols = [X y];
+    relTol = 10^(1 - cfg.precision);
+    for k = 1:numel(files)
+        lines = regexp(fileread(files{k}), '\r?\n', 'split');
+        lines = lines(~strncmp(strtrim(lines), '#', 1));
+        tv = reshape(sscanf(strjoin(lines, ' '), '%f'), 2, [])';
+        if size(tv, 1) ~= M || ...
+           any(abs(tv(:, 1) - t) > relTol * max(1, abs(t))) || ...
+           any(abs(tv(:, 2) - cols(:, k)) > relTol * max(1, abs(cols(:, k))))
+            error('Check failed: signal file "%s" does not match the data.', files{k});
+        end
+    end
+
+    fprintf('Input signals (1D tables, x = time [s]), %d points each, same time vector:\n', M);
+    fprintf('  %s\n', files{:});
+    fprintf('  Sheet row k is at t = (k-1) x %g s.\n', step);
+    fprintf('Amesim run parameters: final time = %g s, %d increments (print interval %g s).\n', ...
+            simTime, nInc, simTime / nInc);
+    perRow = nInc / (M - 1);
+    if perRow == round(perRow)
+        fprintf('  Every data row falls on a print time (%d increment(s) per row).\n\n', perRow);
+    else
+        lo = max(1, floor(perRow)) * (M - 1);
+        hi = ceil(perRow) * (M - 1);
+        warning(['With %d increments not every data row falls on a print time, so ' ...
+                 'some printed outputs lie between rows. Use a multiple of %d ' ...
+                 'increments, e.g. %d or %d.'], nInc, M - 1, lo, hi);
+    end
+end
+
+function write_signal(file, t, v, numFmt, unit, comment)
+% 1D table: x = time, y = signal value.
+    fid = fopen(file, 'w');
+    if fid < 0
+        error('Cannot open "%s" for writing.', file);
+    end
+    closer = onCleanup(@() fclose(fid));
+    fprintf(fid, '# Table format: 1D\n');
+    fprintf(fid, '# %s\n', comment);
+    fprintf(fid, '# axis1_unit = s\n');
+    if ~isempty(unit)
+        fprintf(fid, '# table_unit = %s\n', unit);
+    end
+    fprintf(fid, [numFmt ' ' numFmt '\n'], [t(:)'; v(:)']);
+end
+
+function s = safe_name(name)
+% Column header -> text usable in a file name.
+    s = regexprep(name, '[^A-Za-z0-9_]+', '_');
+    s = regexprep(s, '^_+|_+$', '');
+    if isempty(s)
+        s = 'signal';
     end
 end

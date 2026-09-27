@@ -20,6 +20,32 @@ last column is the value. Reorder with `inputColumns` if needed. The data must c
 back and every data row is checked against it.
 
 
+## Input signals (time tables) for the lookup table
+
+Both tools also write, next to the table, one **1D table per input** with
+**time as the x axis** and that input column as y, plus one for the expected
+output:
+
+```
+<table>_input1_<name>.txt  ...  <table>_inputN_<name>.txt   (# Table format: 1D, x = time [s])
+<table>_expected_<value>.txt                                 (x = time, y = data output)
+```
+
+All signal files share one time vector: sheet row k is at
+`t = (k-1) * simTime / (rows-1)`, in sheet order. Connecting input k of the
+lookup table to signal file k makes the table output reproduce the data
+column at every row time. Set these to match the Amesim run parameters:
+
+| Setting | Meaning | Default |
+| --- | --- | --- |
+| `simTime` | Amesim final time [s] | 1 s per data row (rows - 1) |
+| `nIncrements` | Amesim number of print increments | one per data row (rows - 1) |
+| `signals` | write the signal files | `true` |
+
+The tool prints the matching Amesim final time and print interval, and warns if
+`nIncrements` is not a multiple of (rows - 1), because then some rows fall
+between print times.
+
 ## M1D and MM1D tables
 
 `make_amesim_multi1d_table.m` works the same way (settings block on top,
@@ -51,7 +77,7 @@ Each (X, Y[, Z]) point must appear only once (see `duplicates`).
 
 ## Examples
 
-The `examples/` folder has each input sheet next to the table made from it:
+The `examples/` folder has each input sheet next to the table and the input-signal files made from it (default timing, 1 s per row):
 
 | Input | Command | Output |
 | --- | --- | --- |
