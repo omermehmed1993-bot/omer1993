@@ -1,9 +1,9 @@
 # Table format: T3D
 # Created from FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx
 # Value: Flow_L_min
-# X: dP_bar
-# Y: RPM
-# Z: FlightCondition
+# Breakpoint 1 (Z): FlightCondition
+# Breakpoint 2 (Y): RPM
+# Breakpoint 3 (X): dP_bar
 # table_unit = L/min
 # axis1_unit = bar
 # axis2_unit = rev/min

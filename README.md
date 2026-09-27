@@ -13,8 +13,9 @@ Settings can also be given on the command line:
 make_amesim_table('excelFile', 'Example.xlsx', 'tableUnit', 'kg/s')
 ```
 
-The input columns become axes X1, X2, … in column order (reorder them with
-`inputColumns`). The data must contain every combination of the input values
+**Column order = breakpoint order in the file:** the 1st input column is the
+1st breakpoint (axis X1, written first), the 2nd column is X2, and so on; the
+last column is the value. Reorder with `inputColumns` if needed. The data must contain every combination of the input values
 (a full grid), unless `fillMissing` is set. After writing, the file is read
 back and every data row is checked against it.
 
@@ -25,14 +26,26 @@ back and every data row is checked against it.
 press **Run**) and writes the "Multi 1D" formats, where each curve can have
 its own x points:
 
-| Format | Header | Columns (`columns` setting) | Meaning |
-| --- | --- | --- | --- |
-| M1D  | `# Table format: T1D` | `[X Y Value]`   | one curve z(x) per y value |
-| MM1D | `# Table format: T3D` | `[X Y Z Value]` | one M1D table per z value; each z can have its own y values |
+The sheet columns follow the same rule, **column order = breakpoint order in
+the file**:
 
-```matlab
-make_amesim_multi1d_table('excelFile', 'data.xlsx', 'columns', [5 3 2 6], 'tableUnit', 'kg/s')
+| Format | Header | Column 1 | Column 2 | Column 3 | Column 4 |
+| --- | --- | --- | --- | --- | --- |
+| M1D  | `# Table format: T1D` | Y (one curve per value) | X (curve abscissa) | value | |
+| MM1D | `# Table format: T3D` | Z (one block per value) | Y (one curve per value) | X (curve abscissa) | value |
+
+For example, `FlightCondition | RPM | dP_bar | Flow` gives
+
 ```
+# Table format: T3D
+1 7            <- FlightCondition 1, 7 RPM curves
+  3000 7       <- RPM 3000, 7 points
+    5 18.975   <- dP_bar  Flow
+    ...
+```
+
+Use the `columns` setting to pick or reorder sheet columns, e.g. `[1 2 3 4]`.
+`axisUnits` follows the same column order.
 
 Each (X, Y[, Z]) point must appear only once (see `duplicates`).
 
@@ -43,8 +56,8 @@ The `examples/` folder has each input sheet next to the table made from it:
 | Input | Command | Output |
 | --- | --- | --- |
 | `Example.xlsx` (5 inputs, 4725 rows) | `make_amesim_table('excelFile','examples/Example.xlsx','tableUnit','kg/s')` | `FADEC_FLOW_Demand_5D.txt` |
-| `RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/RPM_DP_FlowRate_MATLAB_Example.xlsx','columns',[2 1 3],'tableUnit','L/min','axisUnits',{'bar','rev/min'})` | `RPM_DP_FlowRate_M1D.txt` |
-| `FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx','columns',[3 2 1 4],'tableUnit','L/min','axisUnits',{'bar','rev/min',''})` | `FlightCondition_RPM_DP_FlowRate_MM1D.txt` |
+| `RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/RPM_DP_FlowRate_MATLAB_Example.xlsx','tableUnit','L/min','axisUnits',{'rev/min','bar'})` | `RPM_DP_FlowRate_M1D.txt` |
+| `FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx` | `make_amesim_multi1d_table('excelFile','examples/FlightCondition_RPM_DP_FlowRate_MATLAB_Example.xlsx','tableUnit','L/min','axisUnits',{'','rev/min','bar'})` | `FlightCondition_RPM_DP_FlowRate_MM1D.txt` |
 
 In the M1D/MM1D examples each curve is flow against dP (X) at one RPM (Y),
 with one set of curves per flight condition (Z) in the MM1D table.

@@ -7,35 +7,43 @@ function make_amesim_multi1d_table(varargin)
 %
 %   Any setting can also be given on the command line, which overrides the
 %   block below, e.g.
-%     make_amesim_multi1d_table('excelFile', 'data.xlsx', 'columns', [5 3 2 6])
+%     make_amesim_multi1d_table('excelFile', 'data.xlsx', 'columns', [1 2 3 4])
 %
-%   TABLE TYPES
-%     M1D  "Multi 1D"       z(x, y)    3 columns: X  Y  Value
-%          A set of 1D curves z(x), one per y value. Each curve can have its
-%          own x points (non-regular mesh in x).
-%     MM1D "Multi Multi 1D" u(x, y, z) 4 columns: X  Y  Z  Value
-%          A set of M1D tables, one per z value. Each z can have its own
-%          y values, and each (y, z) curve its own x points.
+%   COLUMN ORDER = BREAKPOINT ORDER IN THE FILE
+%     The sheet columns are taken in the order their breakpoints appear in
+%     the Amesim file: 1st breakpoint, 2nd breakpoint, ..., then the value.
+%
+%     M1D  "Multi 1D"       3 columns:  1st = Y (one curve per value)
+%                                       2nd = X (curve abscissa)
+%                                       then the table value
+%     MM1D "Multi Multi 1D" 4 columns:  1st = Z (one M1D block per value)
+%                                       2nd = Y (one curve per value)
+%                                       3rd = X (curve abscissa)
+%                                       then the table value
+%
+%     e.g. FlightCondition | RPM | dP_bar | Flow  ->  MM1D with
+%          FlightCondition blocks, RPM curves inside them, Flow vs dP_bar.
+%
+%     Each curve can have its own x points, and in MM1D each Z can have its
+%     own Y values (non-regular mesh).
 %
 %   INPUT DATA  (one row per point, rows in any order, header row on top)
-%     Each row is one point of a curve. Rows with the same Y (and Z) form
-%     one curve. The same (X, Y[, Z]) must not appear twice.
+%     Rows with the same 1st (and 2nd) breakpoint form one curve. The same
+%     combination of breakpoints must not appear twice.
 %
 %   OUTPUT FILE  (layout from the Amesim table-format documentation)
 %     M1D:                          MM1D:
 %       # Table format: T1D           # Table format: T3D
-%       # table_unit = ...            # table_unit = ...
-%       # axis1_unit = ... (X)        # axis1_unit = ... (X)
-%       # axis2_unit = ... (Y)        # axis2_unit = ... (Y)
-%       y1  N1                        # axis3_unit = ... (Z)
-%         x z                         z1  M1          <- M1 curves at z1
-%         ...  (N1 couples)             y1  N1        <- N1 points at (y1, z1)
-%       y2  N2                            x u
-%         x z                             ...
+%       y1  N1   <- 1st breakpoint,   z1  M1          <- 1st breakpoint, M1 curves
+%         x v       N1 points           y1  N1        <- 2nd breakpoint, N1 points
+%         ...    <- 2nd breakpoint        x v         <- 3rd breakpoint, value
+%       y2  N2      and value             ...
 %         ...                           y2  N2
 %                                         ...
 %                                     z2  M2
 %                                       ...
+%     (Amesim numbers the unit lines the other way round: axis1_unit is X,
+%      axis2_unit is Y, axis3_unit is Z. The code takes care of that.)
 %
 %   After writing, the file is read back and every data row is checked
 %   against it.
@@ -45,11 +53,13 @@ function make_amesim_multi1d_table(varargin)
     cfg.sheet      = 1;         % sheet name or number
     cfg.outFile    = '';        % '' = <excel name>_M1D.txt / _MM1D.txt next to the Excel file
     cfg.format     = 'auto';    % 'M1D', 'MM1D', or 'auto' (3 columns -> M1D, 4 -> MM1D)
-    cfg.columns    = [];        % sheet columns in the order [X Y Value] (M1D)
-                                %   or [X Y Z Value] (MM1D); [] = first 3 or 4 columns
-                                %   e.g. [5 3 2 6] -> X=col 5, Y=col 3, Z=col 2, value=col 6
+    cfg.columns    = [];        % sheet columns as [1st 2nd value] (M1D) or
+                                %   [1st 2nd 3rd value] (MM1D) breakpoint;
+                                %   [] = the first 3 or 4 columns in sheet order
+                                %   e.g. [1 2 3 4] -> col 1 = blocks, col 2 = curves,
+                                %                     col 3 = curve x, col 4 = value
     cfg.tableUnit  = '';        % unit of the table value, e.g. 'kg/s' ('' = none)
-    cfg.axisUnits  = {};        % units of {X, Y} or {X, Y, Z}; '' to skip one
+    cfg.axisUnits  = {};        % one unit per breakpoint, same order as columns; '' to skip
     cfg.duplicates = 'error';   % same point twice: 'error' | 'mean' | 'first' | 'last'
     cfg.tolerance  = 1e-9;      % merge values that differ only by round-off
     cfg.precision  = 15;        % significant digits written to the file
@@ -69,13 +79,11 @@ function make_amesim_multi1d_table(varargin)
     end
     [data, headers] = read_sheet(cfg.excelFile, cfg.sheet);
     [D, names, cfg] = select_columns(data, headers, cfg);
-    % D has one row per point: [X Y Value] or [X Y Z Value]
+    % D has one row per point, breakpoints in file order:
+    % [Y X Value] (M1D) or [Z Y X Value] (MM1D)
 
     % 2) Sort into curves ----------------------------------------------------
-    % Reorder to [Z Y X Value] / [Y X Value]: outer slice first, x last.
-    nAxes = size(D, 2) - 1;
-    order = [nAxes:-1:1, nAxes + 1];
-    [rows, info] = build_curves(D(:, order), cfg);
+    [rows, info] = build_curves(D, cfg);
 
     % 3) Write the Amesim file -----------------------------------------------
     if isempty(cfg.outFile)
@@ -87,7 +95,7 @@ function make_amesim_multi1d_table(varargin)
     write_table(cfg.outFile, rows, cfg, names, comments);
 
     % 4) Verify: read the file back and check every data row -----------------
-    verify_file(cfg.outFile, rows, D(:, order), cfg);
+    verify_file(cfg.outFile, rows, D, cfg);
 
     % 5) Summary --------------------------------------------------------------
     print_summary(cfg, rows, names, size(D, 1), info);
@@ -149,7 +157,7 @@ function [data, headers] = read_sheet(file, sheet)
 end
 
 function [D, names, cfg] = select_columns(data, headers, cfg)
-% Pick the [X Y (Z) Value] columns and decide between M1D and MM1D.
+% Pick the breakpoint and value columns and decide between M1D and MM1D.
     nCols = size(data, 2);
     cols = cfg.columns;
     fmt = upper(cfg.format);
@@ -165,8 +173,8 @@ function [D, names, cfg] = select_columns(data, headers, cfg)
             fmt = 'MM1D';
         else
             error(['The sheet has %d columns, so the format cannot be guessed. Set ' ...
-                   'format to ''M1D'' or ''MM1D'' and columns to [X Y Value] ' ...
-                   'or [X Y Z Value].'], nNeeded);
+                   'format to ''M1D'' or ''MM1D'' and columns to the breakpoint ' ...
+                   'columns in file order followed by the value column.'], nNeeded);
         end
     end
     switch fmt
@@ -293,7 +301,9 @@ function write_table(file, rows, cfg, names, comments)
     else
         header = 'T3D';
     end
-    axisLetters = {'X', 'Y', 'Z'};
+    nAxes = numel(names) - 1;
+    letters = {'Z', 'Y', 'X'};
+    letters = letters(end-nAxes+1:end);           % {'Y','X'} or {'Z','Y','X'}
 
     fid = fopen(file, 'w');
     if fid < 0
@@ -303,15 +313,17 @@ function write_table(file, rows, cfg, names, comments)
 
     fprintf(fid, '# Table format: %s\n', header);
     fprintf(fid, '# %s\n', comments{:});
-    for k = 1:numel(names) - 1
-        fprintf(fid, '# %s: %s\n', axisLetters{k}, names{k});
+    for k = 1:nAxes
+        fprintf(fid, '# Breakpoint %d (%s): %s\n', k, letters{k}, names{k});
     end
     if ~isempty(cfg.tableUnit)
         fprintf(fid, '# table_unit = %s\n', cfg.tableUnit);
     end
-    for k = 1:numel(cfg.axisUnits)
-        if ~isempty(cfg.axisUnits{k})
-            fprintf(fid, '# axis%d_unit = %s\n', k, cfg.axisUnits{k});
+    % Amesim: axis1 = X (last breakpoint), axis2 = Y, axis3 = Z
+    for a = 1:numel(cfg.axisUnits)
+        unit = cfg.axisUnits{nAxes - a + 1};
+        if ~isempty(unit)
+            fprintf(fid, '# axis%d_unit = %s\n', a, unit);
         end
     end
     write_level(fid, rows, 1, numFmt);
@@ -416,10 +428,12 @@ end
 
 function print_summary(cfg, rows, names, nRows, info)
     fprintf('\nWrote %s Amesim table: %s\n', cfg.format, cfg.outFile);
-    fprintf('  X: %s\n', names{1});
-    fprintf('  Y: %s   (%d values)\n', names{2}, numel(unique(rows(:, end-2))));
-    if strcmp(cfg.format, 'MM1D')
-        fprintf('  Z: %s   (%d values)\n', names{3}, numel(unique(rows(:, 1))));
+    nAxes = numel(names) - 1;
+    letters = {'Z', 'Y', 'X'};
+    letters = letters(end-nAxes+1:end);
+    for k = 1:nAxes
+        fprintf('  Breakpoint %d (%s): %-20s %d values\n', k, letters{k}, ...
+                names{k}, numel(unique(rows(:, k))));
     end
     fprintf('  Value: %s', names{end});
     if ~isempty(cfg.tableUnit)

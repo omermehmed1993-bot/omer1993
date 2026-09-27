@@ -10,8 +10,9 @@ function make_amesim_table(varargin)
 %     make_amesim_table('excelFile', 'Example.xlsx', 'tableUnit', 'kg/s')
 %
 %   INPUT DATA  (one row per point, rows in any order, header row on top)
-%     InputA  InputB  InputC  ...  Output
-%     The input columns become the table axes X1, X2, ... in column order,
+%     1st bkpt  2nd bkpt  3rd bkpt  ...  Output
+%     COLUMN ORDER = BREAKPOINT ORDER IN THE FILE: the 1st input column is
+%     axis X1 (its breakpoints are written first), the 2nd is X2, and so on;
 %     the output column becomes the table value. Every combination of the
 %     input values must be present (full grid), e.g. 9*5*5*3*7 = 4725 rows.
 %
@@ -35,8 +36,9 @@ function make_amesim_table(varargin)
     cfg.excelFile    = '';        % Excel/CSV file; '' = pick it in a dialog
     cfg.sheet        = 1;         % sheet name or number
     cfg.outFile      = '';        % '' = <excel name>_<N>D.txt next to the Excel file
-    cfg.inputColumns = [];        % [] = all columns except the output, in order
-                                  %      e.g. [2 3 4 5 1] to make column 2 axis X1
+    cfg.inputColumns = [];        % breakpoint columns in file order (1st = X1, 2nd = X2, ...)
+                                  %   [] = all columns except the output, in sheet order
+                                  %   e.g. [2 3 4 5 1] makes sheet column 2 the 1st breakpoint
     cfg.outputColumn = [];        % [] = last column
     cfg.tableUnit    = '';        % unit of the table value, e.g. 'kg/s' ('' = none)
     cfg.axisUnits    = {};        % one unit per axis, e.g. {'', 'm', 'null', '', ''}
@@ -320,7 +322,7 @@ function write_table(file, axesValues, U, cfg, axisNames, comments)
     fprintf(fid, '# Table format: %dD\n', N);
     fprintf(fid, '# %s\n', comments{:});
     for k = 1:N
-        fprintf(fid, '# X%d: %s\n', k, axisNames{k});
+        fprintf(fid, '# Breakpoint %d (X%d): %s\n', k, k, axisNames{k});
     end
     if ~isempty(cfg.tableUnit)
         fprintf(fid, '# table_unit = %s\n', cfg.tableUnit);
@@ -423,7 +425,7 @@ end
 function print_summary(cfg, axesValues, axisNames, valueName, nRows, info)
     fprintf('\nWrote %dD Amesim table: %s\n', numel(axesValues), cfg.outFile);
     for k = 1:numel(axesValues)
-        fprintf('  X%d  %-22s %3d points  [%g ... %g]\n', k, axisNames{k}, ...
+        fprintf('  Breakpoint %d (X%d): %-22s %3d points  [%g ... %g]\n', k, k, axisNames{k}, ...
                 numel(axesValues{k}), axesValues{k}(1), axesValues{k}(end));
     end
     fprintf('  Value: %s', valueName);

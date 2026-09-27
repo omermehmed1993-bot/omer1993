@@ -1,8 +1,8 @@
 # Table format: T1D
 # Created from RPM_DP_FlowRate_MATLAB_Example.xlsx
 # Value: Flow_L_min
-# X: dP_bar
-# Y: RPM
+# Breakpoint 1 (Y): RPM
+# Breakpoint 2 (X): dP_bar
 # table_unit = L/min
 # axis1_unit = bar
 # axis2_unit = rev/min

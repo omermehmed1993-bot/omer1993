@@ -1,11 +1,11 @@
 # Table format: 5D
-# Created from Example.xlsx (sheet FADEC_FLOW_Demand)
+# Created from Example.xlsx
 # Value: Mdot_corrected_kg_s
-# X1: FlightStage
-# X2: Altitude_m
-# X3: Mach
-# X4: ISA_dT_C
-# X5: N_HP_corrected_pct
+# Breakpoint 1 (X1): FlightStage
+# Breakpoint 2 (X2): Altitude_m
+# Breakpoint 3 (X3): Mach
+# Breakpoint 4 (X4): ISA_dT_C
+# Breakpoint 5 (X5): N_HP_corrected_pct
 # table_unit = kg/s
 9
 5
