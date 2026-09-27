@@ -22,29 +22,31 @@ back and every data row is checked against it.
 
 ## Input signals (time tables) for the lookup table
 
-Both tools also write, next to the table, one **1D table per input** with
-**time as the x axis** and that input column as y, plus one for the expected
-output:
+When run, both tools **ask for the Amesim total simulation time and number of
+intervals** (a dialog, or command-window prompts), then write next to the table
+one **1D table per input** with **time as the x axis** and that input as y,
+plus one for the expected output:
 
 ```
 <table>_input1_<name>.txt  ...  <table>_inputN_<name>.txt   (# Table format: 1D, x = time [s])
 <table>_expected_<value>.txt                                 (x = time, y = data output)
 ```
 
-All signal files share one time vector: sheet row k is at
-`t = (k-1) * simTime / (rows-1)`, in sheet order. Connecting input k of the
-lookup table to signal file k makes the table output reproduce the data
-column at every row time. Set these to match the Amesim run parameters:
+All files are sampled on the Amesim print grid `t = 0 : T/N : T` (N intervals,
+N + 1 points). The data rows are spread over these points in sheet order, each
+row held for an equal number of points, so at every print time all inputs equal
+one data row and the table output equals that row's value. N must be at least
+rows - 1; for an equal hold on every row use N + 1 = a multiple of the number
+of rows (the tool suggests values).
 
 | Setting | Meaning | Default |
 | --- | --- | --- |
-| `simTime` | Amesim final time [s] | 1 s per data row (rows - 1) |
-| `nIncrements` | Amesim number of print increments | one per data row (rows - 1) |
+| `simTime` | total simulation time [s] (Amesim final time) | `[]` = ask when run |
+| `nIntervals` | number of intervals (Amesim) | `[]` = ask when run |
 | `signals` | write the signal files | `true` |
 
-The tool prints the matching Amesim final time and print interval, and warns if
-`nIncrements` is not a multiple of (rows - 1), because then some rows fall
-between print times.
+Set `simTime` / `nIntervals` in the settings block (or on the command line) to
+skip the question.
 
 ## M1D and MM1D tables
 
@@ -77,7 +79,7 @@ Each (X, Y[, Z]) point must appear only once (see `duplicates`).
 
 ## Examples
 
-The `examples/` folder has each input sheet next to the table and the input-signal files made from it (default timing, 1 s per row):
+The `examples/` folder has each input sheet next to the table and the input-signal files made from it (print interval 0.5 s, each row held for 1 s; MM1D: `simTime` 440.5 s / 881 intervals, M1D: 48.5 s / 97, 5D: 4724.5 s / 9449):
 
 | Input | Command | Output |
 | --- | --- | --- |

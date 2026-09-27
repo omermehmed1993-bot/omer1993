@@ -30,12 +30,14 @@ function make_amesim_table(varargin)
 %     ...
 %
 %   INPUT SIGNALS  (cfg.signals = true)
-%     For every input a 1D table <table>_input<k>_<name>.txt is also written,
-%     x = time [s], y = that input column, plus <table>_expected_<value>.txt
-%     (x = time, y = the data output). All share one time vector: sheet row k
-%     is at t = (k-1)*simTime/(rows-1), so in Amesim these tables drive the
-%     lookup-table inputs and the output reproduces the data. Set simTime and
-%     nIncrements to the final time and number of print increments you use.
+%     When run, the code ASKS for the Amesim total simulation time and number
+%     of intervals (leave simTime / nIntervals empty), then writes for every
+%     input a 1D table <table>_input<k>_<name>.txt with x = time [s] and
+%     y = that input, plus <table>_expected_<value>.txt (x = time, y = data
+%     output). All are sampled on the Amesim print grid t = 0 : T/N : T; the
+%     data rows are spread over those points in sheet order, each row held
+%     for an equal number of points. At every print time all inputs equal one
+%     data row, so the table output equals that row's value.
 %
 %   After writing, the file is read back and every Excel row is checked
 %   against it.
@@ -56,8 +58,8 @@ function make_amesim_table(varargin)
     cfg.precision    = 15;        % significant digits written to the file
     %% ---- input signals: 1D tables (x = time) that drive the table inputs ----
     cfg.signals      = true;      % also write one time table per input + expected output
-    cfg.simTime      = [];        % Amesim final time [s]; [] = 1 s per data row
-    cfg.nIncrements  = [];        % Amesim number of print increments; [] = one per data row
+    cfg.simTime      = [];        % total simulation time [s];   [] = ask when run
+    cfg.nIntervals   = [];        % number of intervals;         [] = ask when run
     %% =============================================================
 
     cfg = apply_overrides(cfg, varargin);
@@ -486,27 +488,27 @@ end
 %  =========================================================================
 
 function write_signals(cfg, X, y, inputNames, valueName)
-% One 1D table per input (x = time, y = that input column) plus one for the
-% expected output, all on the SAME time vector so the inputs stay in sync:
-% sheet row k is at t = (k-1)*step, with step = simTime/(rows-1).
-% At t = t_k every input equals row k, so the lookup table gives Y of row k.
+% One 1D table per input (x = time, y = input value) plus one for the
+% expected output, all sampled on the Amesim print grid
+%     t_i = i * simTime / nIntervals,   i = 0 ... nIntervals.
+% The data rows are spread over those print points in sheet order, each
+% row held for an equal number of points (+-1), so at every print time all
+% inputs equal one data row and the table output equals that row's value.
     M = size(X, 1);
-    if M < 2
-        error('Input signals need at least 2 data rows.');
-    end
-    simTime = cfg.simTime;
+    [simTime, nInt] = ask_run_parameters(cfg, M);
     if isempty(simTime)
-        simTime = M - 1;                          % 1 s per row
+        fprintf('Input signals skipped (no simulation time given).\n\n');
+        return
     end
-    nInc = cfg.nIncrements;
-    if isempty(nInc)
-        nInc = M - 1;                             % one print increment per row
+    nPts = nInt + 1;
+    if nPts < M
+        error(['%d intervals give %d print points, fewer than the %d data rows, ' ...
+               'so some rows would never be applied. Use at least %d intervals.'], ...
+              nInt, nPts, M, M - 1);
     end
-    if ~(simTime > 0) || nInc < 1 || nInc ~= round(nInc)
-        error('simTime must be > 0 and nIncrements a positive whole number.');
-    end
-    step = simTime / (M - 1);
-    t = (0:M-1)' * step;
+    t = (0:nInt)' * (simTime / nInt);
+    row = floor((0:nInt)' * M / nPts) + 1;         % data row applied at each print point
+    held = accumarray(row, 1, [M 1]);               % print points per data row
 
     [p, base] = fileparts(cfg.outFile);
     numFmt = sprintf('%%.%dg', cfg.precision);
@@ -519,41 +521,74 @@ function write_signals(cfg, X, y, inputNames, valueName)
         end
         files{k} = fullfile(p, sprintf('%s_input%d_%s.txt', base, k, ...
                                        safe_name(inputNames{k})));
-        write_signal(files{k}, t, X(:, k), numFmt, unit, ...
+        write_signal(files{k}, t, X(row, k), numFmt, unit, ...
             sprintf('Input signal %d of %s.txt: %s vs time', k, base, inputNames{k}));
     end
     files{end} = fullfile(p, sprintf('%s_expected_%s.txt', base, safe_name(valueName)));
-    write_signal(files{end}, t, y, numFmt, cfg.tableUnit, ...
+    write_signal(files{end}, t, y(row), numFmt, cfg.tableUnit, ...
         sprintf('Expected output of %s.txt: %s vs time', base, valueName));
 
-    % Check: every file has the same time vector and reproduces its column
+    % Check: every file has the same time vector and the right row values
     cols = [X y];
     relTol = 10^(1 - cfg.precision);
     for k = 1:numel(files)
         lines = regexp(fileread(files{k}), '\r?\n', 'split');
         lines = lines(~strncmp(strtrim(lines), '#', 1));
         tv = reshape(sscanf(strjoin(lines, ' '), '%f'), 2, [])';
-        if size(tv, 1) ~= M || ...
+        want = cols(row, k);
+        if size(tv, 1) ~= nPts || ...
            any(abs(tv(:, 1) - t) > relTol * max(1, abs(t))) || ...
-           any(abs(tv(:, 2) - cols(:, k)) > relTol * max(1, abs(cols(:, k))))
+           any(abs(tv(:, 2) - want) > relTol * max(1, abs(want)))
             error('Check failed: signal file "%s" does not match the data.', files{k});
         end
     end
 
-    fprintf('Input signals (1D tables, x = time [s]), %d points each, same time vector:\n', M);
+    fprintf('Input signals (1D tables, x = time [s]), %d points each, same time vector:\n', nPts);
     fprintf('  %s\n', files{:});
-    fprintf('  Sheet row k is at t = (k-1) x %g s.\n', step);
-    fprintf('Amesim run parameters: final time = %g s, %d increments (print interval %g s).\n', ...
-            simTime, nInc, simTime / nInc);
-    perRow = nInc / (M - 1);
-    if perRow == round(perRow)
-        fprintf('  Every data row falls on a print time (%d increment(s) per row).\n\n', perRow);
+    fprintf('  Amesim run parameters: final time = %g s, %d intervals (print interval %g s).\n', ...
+            simTime, nInt, simTime / nInt);
+    if min(held) == max(held)
+        fprintf('  Each of the %d data rows is held for %d print point(s) (%g s).\n\n', ...
+                M, held(1), held(1) * simTime / nInt);
     else
-        lo = max(1, floor(perRow)) * (M - 1);
-        hi = ceil(perRow) * (M - 1);
-        warning(['With %d increments not every data row falls on a print time, so ' ...
-                 'some printed outputs lie between rows. Use a multiple of %d ' ...
-                 'increments, e.g. %d or %d.'], nInc, M - 1, lo, hi);
+        fprintf(['  Each of the %d data rows is held for %d or %d print points ' ...
+                 '(use %d or %d intervals for an equal hold).\n\n'], ...
+                M, min(held), max(held), M * floor(nPts / M) - 1, M * ceil(nPts / M) - 1);
+    end
+end
+
+function [simTime, nInt] = ask_run_parameters(cfg, M)
+% Total simulation time and number of intervals: from the settings, or
+% asked in a dialog (command-window prompt if no dialog is available).
+    simTime = cfg.simTime;
+    nInt = cfg.nIntervals;
+    if isempty(simTime) || isempty(nInt)
+        prompt = {'Total simulation time [s]  (Amesim final time):', ...
+                  sprintf('Number of intervals  (Amesim; at least %d for %d data rows):', ...
+                          M - 1, M)};
+        defaults = {num2str(M - 1), num2str(M - 1)};
+        try
+            answer = inputdlg(prompt, 'Amesim run parameters', 1, defaults);
+        catch
+            fprintf('\nAmesim run parameters for the input signals (%d data rows)\n', M);
+            answer = {input(['  ' prompt{1} ' '], 's'), input(['  ' prompt{2} ' '], 's')};
+            if all(cellfun(@isempty, answer))
+                answer = {};
+            end
+        end
+        if isempty(answer)
+            simTime = [];
+            nInt = [];
+            return
+        end
+        simTime = str2double(answer{1});
+        nInt = str2double(answer{2});
+    end
+    if ~(isscalar(simTime) && simTime > 0)
+        error('The total simulation time must be a positive number.');
+    end
+    if ~(isscalar(nInt) && nInt >= 1 && nInt == round(nInt))
+        error('The number of intervals must be a positive whole number.');
     end
 end
 
