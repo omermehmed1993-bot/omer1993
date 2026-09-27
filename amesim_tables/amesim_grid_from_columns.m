@@ -121,7 +121,9 @@ function [values, index] = cluster_unique(x, tol)
     scale = max(max(abs(xs)), 1);
     newGroup = [true; diff(xs) > tol * scale];
     groupId = cumsum(newGroup);
-    values = accumarray(groupId, xs, [], @mean)';
+    % Use the most frequent value of each group (a value that really is in
+    % the data) rather than the mean, which would add round-off.
+    values = accumarray(groupId, xs, [], @mode)';
     index = zeros(size(x));
     index(order) = groupId;
 end
