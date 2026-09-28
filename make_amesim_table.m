@@ -107,7 +107,7 @@ function make_amesim_table(varargin)
     N = size(X, 2);
 
     % 2) Arrange the rows on a regular grid ----------------------------------
-    [axesValues, U, rowIndex, info] = build_grid(X, y, cfg);
+    [axesValues, U, rowIndex, info] = build_grid(X, y, cfg, axisNames);
 
     % 3) Write the Amesim file -----------------------------------------------
     if isempty(cfg.outFile)
@@ -263,7 +263,7 @@ end
 %  2) GRID
 %  =========================================================================
 
-function [axesValues, U, lin, info] = build_grid(X, y, cfg)
+function [axesValues, U, lin, info] = build_grid(X, y, cfg, axisNames)
 % Breakpoints of each column, and the N-D value array U with
 % U(i1,...,iN) = y at (axes{1}(i1), ..., axes{N}(iN)).
 % lin(r) is the position of data row r inside U.
@@ -278,6 +278,18 @@ function [axesValues, U, lin, info] = build_grid(X, y, cfg)
             error(['Input "%d" has a single value. Amesim needs at least 2 ' ...
                    'breakpoints per axis; remove this column with inputColumns.'], k);
         end
+    end
+    % A column with more different values than half the rows cannot be a
+    % breakpoint of a full grid (for 2+ inputs): typically time or a row ID.
+    suspect = find(n > M / 2);
+    if N >= 2 && ~isempty(suspect)
+        k = suspect(1);
+        error(['Input X%d ("%s") has %d different values in %d data rows, so it cannot ' ...
+               'be a breakpoint of a full grid: it looks like a time or row-number ' ...
+               'column.\nName its header time / Time_s / t, set timeColumn to its ' ...
+               'column number, or leave it out with inputColumns. (Axis sizes [%s] ' ...
+               'would need %g rows; filling the missing points would invent them.)'], ...
+              k, axisNames{k}, n(k), M, num2str(n), prod(n));
     end
     if N == 1
         lin = idx(:, 1);
@@ -320,7 +332,9 @@ function [axesValues, U, lin, info] = build_grid(X, y, cfg)
             otherwise
                 error(['The data is not a full grid: %d of %d points are missing ' ...
                        '(axis sizes [%s]), e.g. (%s).\n' ...
-                       'Set fillMissing to ''nearest'' or ''linear'' to fill them.'], ...
+                       'First check that every input column is a real breakpoint (not ' ...
+                       'time or an ID). To fill the gaps anyway, set fillMissing to ' ...
+                       '''nearest'' or ''linear''.'], ...
                       numel(missing), total, num2str(n), ...
                       point_text(missing(1), n, axesValues));
         end
