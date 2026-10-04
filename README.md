@@ -137,3 +137,10 @@ The `examples/` folder has each input sheet next to the table and the input-sign
 
 In the M1D/MM1D examples each curve is flow against dP (X) at one RPM (Y),
 with one set of curves per flight condition (Z) in the MM1D table.
+
+## Gear pump CAD → Amesim (Python app)
+
+`gear_pump_cad_app/` holds a desktop app that reads the STEP model of an
+external gear pump (housing + two spur gears). It extracts the gear parameters,
+tooth space volumes, port areas, trapped volume and clearances, and writes them
+as Amesim tables. See [gear_pump_cad_app/README.md](gear_pump_cad_app/README.md).

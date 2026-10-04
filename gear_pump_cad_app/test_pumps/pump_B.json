@@ -1,0 +1,56 @@
+{
+  "name": "pump_B",
+  "units": "mm",
+  "drive_gear": {
+    "z": 14,
+    "x": 0.0,
+    "ra": 20.0,
+    "rf": 14.375,
+    "rb": 16.444620863753396,
+    "r_pitch": 17.5,
+    "bore": 5.03125,
+    "centre": [
+      0,
+      0,
+      0
+    ],
+    "tooth_space_area": 23.33475186048643
+  },
+  "driven_gear": {
+    "z": 14,
+    "x": 0.0,
+    "ra": 20.0,
+    "rf": 14.375,
+    "rb": 16.444620863753396,
+    "r_pitch": 17.5,
+    "bore": 5.03125,
+    "centre": [
+      35.06805752406841,
+      0,
+      0
+    ],
+    "tooth_space_area": 23.33475186048643
+  },
+  "module": 2.5,
+  "alpha_deg": 20.0,
+  "ha": 1.0,
+  "hf": 1.25,
+  "centre_distance": 35.06805752406841,
+  "alpha_w_deg": 20.30330280682052,
+  "rw1": 17.534028762034204,
+  "rw2": 17.534028762034204,
+  "backlash": 0.04999999999999982,
+  "face_width": 15.0,
+  "tip_clearance": 0.03,
+  "bore_radius_1": 20.03,
+  "bore_radius_2": 20.03,
+  "port_width": 7.0,
+  "lateral_gap": 0.03,
+  "ports": "drilled holes of diameter port_width on the y axis through x = a/2, centred at mid face width",
+  "axis": [
+    0,
+    0,
+    1
+  ],
+  "contact_ratio": 1.4359657309265632
+}
