@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+*_amesim/
+.pytest_cache/
