@@ -1,4 +1,9 @@
-%% PILOT-OPERATED PRESSURE REGULATOR - design calculation + simulation
+%% PILOT-OPERATED PRESSURE REGULATOR - SIZING CODE
+%
+% Purely mechanical pilot-operated regulator (no voice coil, no electronic
+% controller). Fill in the INPUTS (sections 1 - 3) and run. The script sizes
+% every part and prints a design report; optionally it simulates the
+% regulator in time to check accuracy and stability.
 %
 % Layout (standard pilot-operated regulator, piston sensing):
 %
@@ -15,68 +20,98 @@
 %  - Outlet pressure rises -> pilot closes -> P_L bleeds to the outlet
 %    through the bleed orifice -> main spring closes the main valve.
 %
-% The script:
-%   1. takes the requirements (gas, P, T, flow, accuracy)
-%   2. sizes every part: ports, main seat + stroke, main piston, main spring,
-%      bleed orifice, pilot seat + stroke, pilot piston, pilot spring,
-%      spring wire / coil geometry, and works out droop, supply-pressure effect
-%   3. simulates the regulator in time to check the design
+% Sized parts: ports, main seat + stroke, main piston, main spring,
+% bleed orifice, pilot seat + stroke, pilot piston, pilot spring,
+% spring wire / coil geometry; plus droop and supply-pressure effect.
 %
-% Flow equations as in the previous work (Gurfidan, METU 2022, eq. 2.5 - 2.9,
-% 2.27): m = Cd*A*f(g)*N*Pu/sqrt(R*T),  Cd = 1 - 0.7*Pd/Pu,
-% conical seat area A = pi*x*sin(th)*(d - x*sin(th)*cos(th)).
+% Flow through any orifice: m = Cd*A*f(g)*N*Pu/sqrt(R*T), Cd = 1 - 0.7*Pd/Pu
+% Conical seat flow area:   A = pi*x*sin(th)*(d - x*sin(th)*cos(th))
 % Runs in MATLAB or GNU Octave, no toolboxes needed.
 
 clear; clc; close all;
 
-%% 1. REQUIREMENTS  (edit these)
-R      = 287;        % gas constant, air          [J/(kg K)]
-g      = 1.4;        % ratio of specific heats    [-]
-T      = 20 + 273.15;% gas temperature            [K]
-Pamb   = 101325;     % ambient pressure           [Pa]
+%% ======================= INPUTS (edit only here) =========================
 
-P1_nom = 10e5;       % nominal inlet pressure     [Pa gauge]
-P1_min =  8e5;       % minimum inlet pressure     [Pa gauge]  (valve sized here)
-P1_max = 12e5;       % maximum inlet pressure     [Pa gauge]  (lock-up checked here)
-P2_set =  6e5;       % outlet set pressure        [Pa gauge]
-P2_adj = [4e5 8e5];  % pilot spring adjustment range [Pa gauge]
-Q      = 500;        % design flow                [Nm3/h]  (0 degC, 1.01325 bar)
-droop  = 0.10e5;     % allowed outlet drop from no flow to full flow [Pa]
+%% 1. INPUTS - REQUIREMENTS
+gas_R            = 287;      % gas constant              [J/(kg K)]  air 287, N2 297, He 2077
+gas_gamma        = 1.4;      % ratio of specific heats   [-]         air 1.4, N2 1.4, He 1.667
+T_inlet_C        = 20;       % gas temperature           [degC]
+P_atm_bar        = 1.01325;  % ambient pressure          [bar(a)]
 
-%% 2. DESIGN CHOICES  (typical values - edit if needed)
-v_port   = 30;       % max gas velocity in the ports              [m/s]
-th_deg   = 45;       % seat angle, main and pilot                 [deg]
-x_d_main = 0.15;     % main stroke / main seat diameter at full flow [-]
-D_ratio  = 2.0;      % main piston diameter / main seat diameter  [-]
-dP_crack = 0.2e5;    % P_L - P2 at which the main valve starts to open [Pa]
-dP_full  = 1.0e5;    % P_L - P2 at full main valve opening        [Pa]
-d_bleed  = 1.0e-3;   % bleed orifice diameter                     [m]
-d_pseat  = 2.0e-3;   % pilot seat diameter                        [m]
-D_ppist  = 25e-3;    % pilot piston diameter                      [m]
-% springs (helical compression, steel)
-G_spring = 79.3e9;   % shear modulus                              [Pa]
-tau_all  = 600e6;    % allowed shear stress                       [Pa]
-n_active = 6;        % active coils                               [-]
-% dynamics (for the simulation only)
-mass_main  = 0.25;   % main poppet + piston moving mass           [kg]
-mass_pilot = 0.03;   % pilot plug + piston moving mass            [kg]
-zeta     = 0.7;      % damping ratio of both moving parts (seals) [-]
-V_out    = 5e-3;     % downstream volume (pipe / receiver)        [m3]
-V_L0     = 100e-6;   % loading chamber volume, main valve closed  [m3]
-                     % (acts as a filter: below ~40 cm3 this design's pilot oscillates)
+P1_nominal_barg  = 10;       % nominal inlet pressure    [bar(g)]
+P1_minimum_barg  = 8;        % minimum inlet pressure    [bar(g)]   main valve is sized here
+P1_maximum_barg  = 12;       % maximum inlet pressure    [bar(g)]   pilot spring checked here
+P2_set_barg      = 6;        % outlet set pressure       [bar(g)]
+P2_adj_min_barg  = 4;        % pilot spring adjustment range, lowest  [bar(g)]
+P2_adj_max_barg  = 8;        % pilot spring adjustment range, highest [bar(g)]
+Q_design_Nm3h    = 500;      % design flow               [Nm3/h]    (0 degC, 1.01325 bar)
+droop_bar        = 0.10;     % allowed outlet drop, no flow -> full flow [bar]
 
-%% 3. GAS FUNCTIONS (thesis eq. 2.5 - 2.9, 2.27)
-f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));          % eq. 2.6
-pcr  = (2/(g+1))^(g/(g-1));                            % critical ratio, eq. 2.8
+%% 2. INPUTS - DESIGN CHOICES (typical values)
+v_port_max_ms    = 30;       % max gas velocity in the ports        [m/s]
+seat_angle_deg   = 45;       % seat angle, main and pilot valve     [deg]
+stroke_to_seat   = 0.15;     % main stroke / main seat diameter at full flow [-]
+piston_to_seat   = 2.0;      % main piston diameter / main seat diameter     [-]
+dP_crack_bar     = 0.2;      % loading - outlet pressure when main valve starts to open [bar]
+dP_full_bar      = 1.0;      % loading - outlet pressure at full main valve opening    [bar]
+d_bleed_mm       = 1.0;      % bleed orifice diameter               [mm]
+d_pilot_seat_mm  = 2.0;      % pilot seat diameter                  [mm]
+D_pilot_pist_mm  = 25;       % pilot piston diameter                [mm]
+G_spring_GPa     = 79.3;     % spring material shear modulus        [GPa]  (steel)
+tau_allow_MPa    = 600;      % spring allowed shear stress          [MPa]
+n_active_coils   = 6;        % active coils of each spring          [-]
+
+%% 3. INPUTS - DESIGN CHECK SIMULATION (optional)
+run_check_sim    = 1;        % 1 = run the time simulation check, 0 = sizing only
+m_main_g         = 250;      % main poppet + piston moving mass     [g]
+m_pilot_g        = 30;       % pilot plug + piston moving mass      [g]
+zeta             = 0.7;      % damping ratio of the moving parts    [-]
+V_outlet_L       = 5;        % downstream volume (pipe / receiver)  [L]
+V_loading_cm3    = 100;      % loading chamber volume, main closed  [cm3]  (below ~40 cm3 this example oscillates)
+
+%% ===================== END OF INPUTS ======================================
+
+%% 4. UNIT CONVERSION TO SI (do not edit)
+R        = gas_R;
+g        = gas_gamma;
+T        = T_inlet_C + 273.15;          % [K]
+Pamb     = P_atm_bar * 1e5;             % [Pa]
+P1_nom   = P1_nominal_barg * 1e5;       % [Pa gauge]
+P1_min   = P1_minimum_barg * 1e5;
+P1_max   = P1_maximum_barg * 1e5;
+P2_set   = P2_set_barg * 1e5;
+P2_adj   = [P2_adj_min_barg P2_adj_max_barg] * 1e5;
+Q        = Q_design_Nm3h;               % [Nm3/h]
+droop    = droop_bar * 1e5;             % [Pa]
+v_port   = v_port_max_ms;
+th_deg   = seat_angle_deg;
+x_d_main = stroke_to_seat;
+D_ratio  = piston_to_seat;
+dP_crack = dP_crack_bar * 1e5;
+dP_full  = dP_full_bar * 1e5;
+d_bleed  = d_bleed_mm / 1e3;            % [m]
+d_pseat  = d_pilot_seat_mm / 1e3;
+D_ppist  = D_pilot_pist_mm / 1e3;
+G_spring = G_spring_GPa * 1e9;          % [Pa]
+tau_all  = tau_allow_MPa * 1e6;
+n_active = n_active_coils;
+mass_main  = m_main_g / 1e3;            % [kg]
+mass_pilot = m_pilot_g / 1e3;
+V_out    = V_outlet_L / 1e3;            % [m3]
+V_L0     = V_loading_cm3 / 1e6;
+
+%% 5. GAS FLOW FUNCTIONS
+f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));
+pcr  = (2/(g+1))^(g/(g-1));                            % critical pressure ratio
 Nden = (g-1)/2 * (2/(g+1))^((g+1)/(g-1));
-Nf   = @(r) (r <= pcr) + (r > pcr) .* sqrt(max(r.^(2/g) - r.^((g+1)/g), 0) / Nden);   % eq. 2.7
-mdot = @(A, Pu, Pd) (1 - 0.7*Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);       % eq. 2.5, 2.9
-Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ ((1 - 0.7*Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);     % eq. 2.5 solved for A
+Nf   = @(r) (r <= pcr) + (r > pcr) .* sqrt(max(r.^(2/g) - r.^((g+1)/g), 0) / Nden);
+mdot = @(A, Pu, Pd) (1 - 0.7*Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);
+Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ ((1 - 0.7*Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);
 s    = sind(th_deg);  sc = sind(th_deg)*cosd(th_deg);
-Aseat  = @(x, d) pi * max(x,0) .* s .* (d - max(x,0)*sc);                           % eq. 2.27
-stroke = @(A, d) (d - sqrt(d.^2 - 4*sc*A/(pi*s))) / (2*sc);                        % eq. 2.27 solved for x
+Aseat  = @(x, d) pi * max(x,0) .* s .* (d - max(x,0)*sc);
+stroke = @(A, d) (d - sqrt(d.^2 - 4*sc*A/(pi*s))) / (2*sc);
 
-%% 4. DESIGN CALCULATION
+%% 6. DESIGN CALCULATION
 % --- absolute pressures and flow
 P1n = P1_nom + Pamb;  P1l = P1_min + Pamb;  P1h = P1_max + Pamb;
 P2s = P2_set + Pamb;                       % outlet at lock-up (no flow)
@@ -141,7 +176,7 @@ for j = 1:2
     sp(j).L_inst   = sp(j).L_free - sp(j).F(1)/sp(j).k;          % installed length
 end
 
-%% 5. DESIGN REPORT
+%% 7. DESIGN REPORT
 b = @(P) P/1e5;  mm = @(x) x*1e3;  mm2 = @(A) A*1e6;
 fprintf('================ PILOT-OPERATED REGULATOR DESIGN ================\n');
 fprintf('Inlet %.1f bar(g) (min %.1f, max %.1f)  ->  outlet %.2f bar(g),  %.0f Nm3/h = %.4f kg/s\n', ...
@@ -188,7 +223,9 @@ fprintf('  Spring index 4 <= C <= 12 (main, pilot)            : %s, %s\n', ...
 fprintf('  Spring buckling, free L / D < 4 (main, pilot)      : %s, %s\n', ...
         yesno{(sp(1).L_free/sp(1).D < 4)+1}, yesno{(sp(2).L_free/sp(2).D < 4)+1});
 
-%% 6. SIMULATION (check the design in time)
+%% 8. DESIGN CHECK SIMULATION (optional, switch: run_check_sim)
+if run_check_sim == 1
+% ---- simulation
 % States: P2 outlet, PL loading chamber, xm/vm main valve, xp/vp pilot.
 % Gas volumes: dP/dt = g*R*T/V * (m_in - m_out)  (constant temperature T)
 c_main  = 2*zeta*sqrt(k_main*mass_main);    % damping from damping ratio
@@ -227,7 +264,7 @@ for n = 1:N
     if xp_ < 0,          xp_ = 0;          vp_ = max(vp_, 0);  end   % pilot on seat
 end
 
-%% 7. PLOTS
+% ---- plots
 figure('Name', 'Pilot regulator simulation', 'Position', [100 100 800 900]);
 subplot(4,1,1);
 plot(t, (P1t-Pamb)/1e5, 'k', t, (PL-Pamb)/1e5, 'r', t, (P2-Pamb)/1e5, 'b'); grid on;
@@ -245,7 +282,7 @@ plot(t, mdem*1e3, 'k', t, m_m*1e3, 'b', t, m_b_t*1e3*100, 'r'); grid on; xlim([0
 ylabel('flow (g/s)'); xlabel('Time (s)');
 legend('demand', 'main valve', 'bleed x 100', 'Location', 'northeast');
 
-%% 8. SIMULATED PERFORMANCE vs DESIGN
+% ---- simulated performance vs design
 k = @(tt) round(tt/dt);                    % index just before time tt
 fprintf('\nSIMULATION (steady values just before each step)\n');
 fprintf('  Full flow, P1 nominal : P2 = %.3f bar(g), main stroke %.3f mm, pilot stroke %.4f mm\n', ...
@@ -267,4 +304,5 @@ if max(ripple) < 0.01
     fprintf('  -> stable: no sustained oscillation\n');
 else
     fprintf('  -> OSCILLATING: increase loading volume V_L0, or reduce pilot seat diameter\n');
+end
 end
