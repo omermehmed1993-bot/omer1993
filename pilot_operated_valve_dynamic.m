@@ -9,7 +9,7 @@
 %   INLET P1,T1 --+-----------------> MAIN VALVE -----> OUTLET P2,T2 --> load
 %                 |                      ^
 %                 |                      | opened by the BIG PISTON
-%                 |                      | (spring closes it)
+%                 |                      | (compressed spring holds it closed)
 %                 +--> PILOT REGULATOR --> PISTON CHAMBER Pr,Tr --> BLEED --> ambient
 %                      (set: 5 bar)        (regulated pressure)
 %
@@ -21,8 +21,9 @@
 %  4. The regulated pressure pushes the big piston against the main spring.
 %     The piston displacement at the design point is an input: the code sets
 %     the spring preload so that the piston sits there at the regulated
-%     pressure. The piston can open the valve (spring closes it) or close the
-%     valve (spring opens it) - see input "piston_action".
+%     pressure. The main spring is compressed and holds the valve CLOSED;
+%     the regulated pressure on the piston opens it. The valve opening equals
+%     the piston displacement.
 %  5. The main flow goes through the main valve to the outlet volume and on
 %     to the load (the consumer downstream).
 %
@@ -75,11 +76,9 @@ seat_angle_deg   = 45;       % seat angle, pilot and main valve  [deg]
 %% 4. INPUTS - MAIN VALVE SIZE
 d_main_seat_mm   = 40;       % main valve seat (outlet) diameter [mm]
 D_main_pist_mm   = 60;       % big piston diameter               [mm]
-x_main_max_mm    = 10;       % big piston stroke (0 = rest position, no pressure) [mm]
+x_main_max_mm    = 10;       % big piston stroke (0 = valve closed, no pressure) [mm]
 k_main_Nmm       = 70;       % main spring rate                  [N/mm]
 x_main_design_mm = 8;        % DESIGN POINT: piston displacement at the regulated pressure [mm]
-piston_action    = 1;        % 1 = piston OPENS the valve (closed at rest)
-                             % 2 = piston CLOSES the valve (fully open at rest)
 m_main_g         = 500;      % main valve moving mass            [g]
 V_chamber_cm3    = 50;       % piston chamber volume, valve closed [cm3]
 V_outlet_L       = 5;        % volume at the main valve outlet   [L]
@@ -127,12 +126,6 @@ end
 mdot  = @(A, Pu, Pd, Tu) (Pu > Pd) .* Cdf(min(Pd./Pu,1)) .* A * f .* Nf(min(Pd./Pu,1)) .* Pu ./ sqrt(R*Tu);
 s     = sind(seat_angle_deg);   sc = sind(seat_angle_deg)*cosd(seat_angle_deg);
 Acone = @(x, d) pi*max(x,0).*s.*(d - max(x,0)*sc);     % conical seat flow area
-% main valve opening from the piston displacement x
-if piston_action == 1
-    opening = @(x) x;                  % piston opens the valve
-else
-    opening = @(x) xm_max - x;         % piston closes the valve
-end
 
 %% 8. SETTINGS WORKED OUT FROM THE INPUTS
 % --- pilot spring preload: the adjusting screw is set so that the regulator
@@ -151,17 +144,17 @@ F_p0 = (Prset - Pamb)*A_pp + (P1 - Prset)*A_ps + k_p*xp_set;   % pilot spring fo
 if xm_des < 0 || xm_des > xm_max
     error('Design displacement must be between 0 and the piston stroke (%.2f mm).', xm_max*1e3);
 end
-F_m0 = (Prset - Pamb)*A_mp - k_m*xm_des;                   % main spring force at rest position
+F_m0 = (Prset - Pamb)*A_mp - k_m*xm_des;                   % main spring force with the valve closed (preload)
 if F_m0 < 0
     error(['Piston too small or spring too stiff: %.2f bar(g) on the piston gives %.0f N, ' ...
            'but the spring needs %.0f N at %.2f mm.'], Pr_set_barg, (Prset - Pamb)*A_mp, k_m*xm_des, xm_des*1e3);
 end
 
 % --- load: orifice to ambient that passes the design flow at the design displacement
-A_main_design = min(Acone(opening(xm_des), d_ms), A_bore); % main valve flow area at the design point
+A_main_design = min(Acone(xm_des, d_ms), A_bore);          % main valve flow area at the design point
 if mdot(A_main_design, P1, pcr*P1, T1) < m_design_kgs
     error(['Main valve opening too small at the design point: %.2f mm opening (%.0f mm2) cannot pass ' ...
-           '%.3f kg/s at this inlet pressure.'], opening(xm_des)*1e3, A_main_design*1e6, m_design_kgs);
+           '%.3f kg/s at this inlet pressure.'], xm_des*1e3, A_main_design*1e6, m_design_kgs);
 end
 lo = Pamb; hi = P1;                                       % find the outlet pressure P2
 for it = 1:60
@@ -178,11 +171,10 @@ law_txt = {'thesis rule Cd = 1 - 0.7*Pd/Pu', sprintf('constant Cd = %.2f', Cd_co
 fprintf('================ SETTINGS FROM THE INPUTS ================\n');
 fprintf('Flow coefficient: %s\n', law_txt{flow_coeff_law});
 fprintf('Pilot spring force at closed position   %8.1f N   (set for %.2f bar(g) with bleed flow %.3f g/s)\n', F_p0, Pr_set_barg, m_bleed_set*1e3);
-action_txt = {'piston opens the valve', 'piston closes the valve'};
-fprintf('Main spring force at rest position      %8.1f N   (piston at %.2f mm of %.2f mm at %.2f bar(g); %s)\n', ...
-        F_m0, xm_des*1e3, xm_max*1e3, Pr_set_barg, action_txt{piston_action});
+fprintf('Main spring preload (valve closed)      %8.1f N   (piston at %.2f mm of %.2f mm at %.2f bar(g))\n', ...
+        F_m0, xm_des*1e3, xm_max*1e3, Pr_set_barg);
 fprintf('Piston starts to move / reaches its stop at %.2f / %.2f bar(g)\n', F_m0/A_mp/1e5, (F_m0 + k_m*xm_max)/A_mp/1e5);
-fprintf('Main valve at the design point          %8.2f mm opening, flow area %.1f mm2\n', opening(xm_des)*1e3, A_main_design*1e6);
+fprintf('Main valve at the design point          %8.2f mm opening, flow area %.1f mm2\n', xm_des*1e3, A_main_design*1e6);
 fprintf('Load orifice (effective area)           %8.1f mm2  (passes %.3f kg/s at outlet %.2f bar(g))\n', A_load*1e6, m_design_kgs, (P2_design-Pamb)/1e5);
 
 %% 9. DYNAMIC SIMULATION (step by step in time)
@@ -195,7 +187,7 @@ P1t = Pamb + (P1 - Pamb)*min(t/t_ramp_s, 1);              % inlet pressure ramp
 Pr = Pamb;  Tr = T_start_K;      % piston chamber (regulated pressure)
 P2 = Pamb;  T2 = T_start_K;      % main valve outlet volume
 xp = xp_max; vp = 0;             % pilot is held open by its spring
-xm = 0;      vm = 0;             % big piston is held at its rest position by its spring
+xm = 0;      vm = 0;             % main valve is held closed by its spring
 
 for n = 1:N
     Pin = P1t(n);
@@ -219,7 +211,7 @@ for n = 1:N
     Fm  = (Pr - Pamb)*A_mp - F_m0 - k_m*xm - c_m*vm;
 
     % STEP 6 - main valve: flow from the inlet to the outlet volume
-    A_mv   = min(Acone(opening(xm), d_ms), A_bore);
+    A_mv   = min(Acone(xm, d_ms), A_bore);
     m_main = mdot(A_mv, Pin, P2, T1);
 
     % STEP 7 - load: flow from the outlet volume to the consumer
@@ -240,7 +232,7 @@ for n = 1:N
     vm = vm + Fm/m_m*dt;   xm = xm + vm*dt;
     if xp < 0,      xp = 0;      vp = max(vp, 0);  end    % pilot on its seat
     if xp > xp_max, xp = xp_max; vp = min(vp, 0);  end    % pilot on its stop
-    if xm < 0,      xm = 0;      vm = max(vm, 0);  end    % big piston at rest position
+    if xm < 0,      xm = 0;      vm = max(vm, 0);  end    % main valve closed
     if xm > xm_max, xm = xm_max; vm = min(vm, 0);  end    % big piston on its stop
 end
 
@@ -270,7 +262,7 @@ fprintf('4. BLEED ORIFICE      P ratio %.3f (%s), flow %.3f g/s to ambient\n', r
 fprintf('5. BIG PISTON         pressure force %.1f N, spring force %.1f N, displacement %.3f mm (design %.3f, stroke %.3f)\n', ...
         (Pr_h(n) - Pamb)*A_mp, F_m0 + k_m*xm_h(n), xm_h(n)*1e3, xm_des*1e3, xm_max*1e3);
 fprintf('6. MAIN VALVE         opening %.3f mm, flow area %.1f mm2, P ratio %.3f (%s), flow %.4f kg/s\n', ...
-        opening(xm_h(n))*1e3, min(Acone(opening(xm_h(n)), d_ms), A_bore)*1e6, r_mv, ch{(r_mv <= pcr)+1}, mm_h(n));
+        xm_h(n)*1e3, min(Acone(xm_h(n), d_ms), A_bore)*1e6, r_mv, ch{(r_mv <= pcr)+1}, mm_h(n));
 fprintf('7. OUTLET             P2 = %.3f bar(g), T2 = %.1f K, flow to the load %.4f kg/s (%s)\n', ...
         bg(P2_h(n)), T2_h(n), ml_h(n), ch{(r_ld <= pcr)+1});
 fprintf('\nREGULATOR OUTPUT      Pr = %.3f bar(g), flow %.3f g/s\n', bg(Pr_h(n)), mp_h(n)*1e3);
@@ -292,8 +284,8 @@ plot(t, bg(P1t), 'k', t, bg(Pr_h), 'r', t, bg(P2_h), 'b'); grid on; ylabel('pres
 legend('inlet P1', 'regulated Pr', 'outlet P2', 'Location', 'southeast');
 title('Pilot-operated main valve: start-up');
 subplot(4,1,2);
-plot(t, xm_h*1e3, 'b', t, opening(xm_h)*1e3, 'k--', t, xp_h*1e3*10, 'r'); grid on; ylabel('displacement (mm)');
-legend('big piston', 'main valve opening', 'pilot x 10', 'Location', 'southeast');
+plot(t, xm_h*1e3, 'b', t, xp_h*1e3*10, 'r'); grid on; ylabel('displacement (mm)');
+legend('big piston = main valve opening', 'pilot x 10', 'Location', 'southeast');
 subplot(4,1,3);
 plot(t, mm_h, 'b', t, ml_h, 'k--', t, mp_h*100, 'r', t, mb_h*100, 'm:'); grid on; ylabel('flow (kg/s)');
 legend('main valve', 'to load', 'pilot x 100', 'bleed x 100', 'Location', 'southeast');
