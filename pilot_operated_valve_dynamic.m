@@ -36,7 +36,8 @@
 %  - Seal friction is represented by a damping ratio.
 %
 % Flow through any opening:  m = Cd*A*f(g)*N*Pu/sqrt(R*Tu),  Cd from input "flow_coeff_law"
-% Conical seat flow area:    A = pi*x*sin(th)*(d - x*sin(th)*cos(th))
+% Conical seat flow area:    A = pi*x*sin(th)*(d - x*sin(th)*cos(th)),
+%                            d = seat diameter = OUTER (large) sealing diameter of the poppet
 % Gas volume:  dP/dt = [g*R*(Tin*m_in - T*m_out) - g*P*dV/dt] / V
 %              dT/dt = R*T^2/(V*P)*[(g*Tin/T - 1)*m_in - (g-1)*m_out] - (g-1)*T/V*dV/dt
 % Runs in MATLAB or GNU Octave, no toolboxes needed.
@@ -56,16 +57,17 @@ gas_R            = 287;      % gas constant              [J/(kg K)]  air 287
 gas_gamma        = 1.4;      % ratio of specific heats   [-]         air 1.4 (1.38 at 600 K)
 P_atm_bar        = 1.01325;  % ambient pressure          [bar(a)]
 T_start_K        = 293;      % gas temperature inside the valve before start [K]
-flow_coeff_law   = 1;        % flow coefficient Cd of every opening:
+flow_coeff_law   = 2;        % flow coefficient Cd of every opening:
                              %   1 = thesis rule      Cd = 1 - 0.7*Pd/Pu
-                             %   2 = constant value   Cd = Cd_constant
+                             %   2 = constant value   Cd = Cd_constant   (default: fits measured regulator data best)
                              %   3 = Perry rule for a sharp-edged orifice (0.84 choked ... 0.60 at no pressure drop);
                              %       this is the variable-Cq option of the Amesim pneumatic library
-Cd_constant      = 0.50;     % used only with law 2. 0.50 reproduces the Swagelok RHPS sizing rule [-]
+Cd_constant      = 0.70;     % used only with law 2 [-]. 0.70 = value of the test-validated regulator model
+                             % (Manimaran & Hiremath 2018); 0.50 = conservative Swagelok RHPS sizing rule
 
 %% 3. INPUTS - PILOT REGULATOR SIZE
 Pr_set_barg      = 5;        % regulated pressure setting        [bar(g)]
-d_pilot_seat_mm  = 2.0;      % pilot seat diameter               [mm]
+d_pilot_seat_mm  = 2.0;      % pilot seat diameter (outer sealing diameter) [mm]
 x_pilot_max_mm   = 0.5;      % pilot maximum stroke              [mm]
 D_pilot_pist_mm  = 20;       % pilot sensing piston diameter     [mm]
 k_pilot_Nmm      = 30;       % pilot spring rate                 [N/mm]
@@ -74,7 +76,7 @@ d_bleed_mm       = 0.8;      % bleed orifice diameter (piston chamber to ambient
 seat_angle_deg   = 45;       % seat angle, pilot and main valve  [deg]
 
 %% 4. INPUTS - MAIN VALVE SIZE
-d_main_seat_mm   = 40;       % main valve seat (outlet) diameter [mm]
+d_main_seat_mm   = 40;       % main valve seat diameter (outer sealing diameter) [mm]
 D_main_pist_mm   = 60;       % big piston diameter               [mm]
 x_main_max_mm    = 10;       % big piston stroke: 0 = no pressure, valve fully open; full stroke = valve closed [mm]
 k_main_Nmm       = 70;       % main spring rate                  [N/mm]

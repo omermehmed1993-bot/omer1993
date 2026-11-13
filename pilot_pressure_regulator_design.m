@@ -25,7 +25,8 @@
 % spring wire / coil geometry; plus droop and supply-pressure effect.
 %
 % Flow through any orifice: m = Cd*A*f(g)*N*Pu/sqrt(R*T), Cd from input "flow_coeff_law"
-% Conical seat flow area:   A = pi*x*sin(th)*(d - x*sin(th)*cos(th))
+% Conical seat flow area:   A = pi*x*sin(th)*(d - x*sin(th)*cos(th)),
+%                           d = seat diameter = OUTER (large) sealing diameter of the poppet
 % Runs in MATLAB or GNU Octave, no toolboxes needed.
 
 clear; clc; close all;
@@ -50,18 +51,19 @@ droop_bar        = 0.10;     % allowed outlet drop, no flow -> full flow [bar]
 %% 2. INPUTS - DESIGN CHOICES (typical values)
 v_port_max_ms    = 30;       % max gas velocity in the ports        [m/s]
 seat_angle_deg   = 45;       % seat angle, main and pilot valve     [deg]
-flow_coeff_law   = 1;        % flow coefficient Cd of every opening:
+flow_coeff_law   = 2;        % flow coefficient Cd of every opening:
                              %   1 = thesis rule      Cd = 1 - 0.7*Pd/Pu
-                             %   2 = constant value   Cd = Cd_constant
+                             %   2 = constant value   Cd = Cd_constant   (default: fits measured regulator data best)
                              %   3 = Perry rule for a sharp-edged orifice (0.84 choked ... 0.60 at no pressure drop);
                              %       this is the variable-Cq option of the Amesim pneumatic library
-Cd_constant      = 0.50;     % used only with law 2. 0.50 reproduces the Swagelok RHPS sizing rule [-]
+Cd_constant      = 0.70;     % used only with law 2 [-]. 0.70 = value of the test-validated regulator model
+                             % (Manimaran & Hiremath 2018); 0.50 = conservative Swagelok RHPS sizing rule
 stroke_to_seat   = 0.15;     % main stroke / main seat diameter at full flow [-]
 piston_to_seat   = 2.0;      % main piston diameter / main seat diameter     [-]
 dP_crack_bar     = 0.2;      % loading - outlet pressure when main valve starts to open [bar]
 dP_full_bar      = 1.0;      % loading - outlet pressure at full main valve opening    [bar]
 d_bleed_mm       = 1.0;      % bleed orifice diameter               [mm]
-d_pilot_seat_mm  = 2.0;      % pilot seat diameter                  [mm]
+d_pilot_seat_mm  = 2.0;      % pilot seat diameter (outer sealing diameter) [mm]
 D_pilot_pist_mm  = 25;       % pilot piston diameter                [mm]
 G_spring_GPa     = 79.3;     % spring material shear modulus        [GPa]  (steel)
 tau_allow_MPa    = 600;      % spring allowed shear stress          [MPa]
