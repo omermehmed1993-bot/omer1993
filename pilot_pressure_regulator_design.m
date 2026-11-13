@@ -79,7 +79,39 @@ V_loading_cm3    = 100;      % loading chamber volume, main closed  [cm3]  (belo
 
 %% ===================== END OF INPUTS ======================================
 
-%% 4. UNIT CONVERSION TO SI (do not edit)
+%% 4. INPUT CHECKS AND UNIT CONVERSION TO SI (do not edit)
+% Every row: a condition that must be true, and the message shown if it is not.
+checks = {
+    gas_R > 0 && gas_gamma > 1,                         'Gas constant must be > 0 and the ratio of specific heats > 1.'
+    T_inlet_C > -273.15 && P_atm_bar > 0,               'Temperature must be above -273.15 degC and ambient pressure > 0.'
+    P1_minimum_barg <= P1_nominal_barg && P1_nominal_barg <= P1_maximum_barg, ...
+                                                        'Inlet pressures must be in the order minimum <= nominal <= maximum.'
+    P2_set_barg > 0,                                    'Outlet set pressure must be > 0 bar(g).'
+    P2_adj_min_barg <= P2_set_barg && P2_set_barg <= P2_adj_max_barg, ...
+                                                        'Outlet set pressure must lie inside the pilot spring adjustment range.'
+    Q_design_Nm3h > 0,                                  'Design flow must be > 0.'
+    droop_bar > 0 && droop_bar < P2_set_barg,           'Droop must be > 0 and smaller than the outlet set pressure.'
+    v_port_max_ms > 0,                                  'Port velocity must be > 0.'
+    seat_angle_deg > 0 && seat_angle_deg <= 90,         'Seat angle must be between 0 and 90 deg (90 = flat seat).'
+    stroke_to_seat > 0 && stroke_to_seat <= 0.25,       'Main stroke / seat diameter must be > 0 and at most 0.25 (above that the seat bore limits the flow).'
+    piston_to_seat > 0,                                 'Main piston / seat diameter ratio must be > 0.'
+    dP_crack_bar >= 0 && dP_full_bar > dP_crack_bar,    'Loading pressure at full opening must be higher than at cracking (dP_full_bar > dP_crack_bar >= 0).'
+    P1_minimum_barg > P2_set_barg - droop_bar + dP_full_bar, ...
+        sprintf(['Minimum inlet pressure too low. The pilot needs P1 min > P2 set - droop + dP_full = %.2f bar(g). ' ...
+                 'Raise P1 min, lower the outlet pressure or reduce dP_full_bar.'], P2_set_barg - droop_bar + dP_full_bar)
+    d_bleed_mm > 0 && d_pilot_seat_mm > 0,              'Bleed orifice and pilot seat diameters must be > 0.'
+    D_pilot_pist_mm > d_pilot_seat_mm,                  'Pilot piston diameter must be larger than the pilot seat diameter.'
+    G_spring_GPa > 0 && tau_allow_MPa > 0 && n_active_coils >= 1, 'Spring data must be > 0 and active coils >= 1.'
+    any(flow_coeff_law == [1 2 3]),                     'flow_coeff_law must be 1, 2 or 3.'
+    Cd_constant > 0 && Cd_constant <= 1,                'Cd_constant must be > 0 and at most 1.'
+    m_main_g > 0 && m_pilot_g > 0 && zeta >= 0 && V_outlet_L > 0 && V_loading_cm3 > 0, ...
+                                                        'Masses and volumes must be > 0 and the damping ratio >= 0.'
+    };
+bad = checks(~[checks{:,1}], 2);
+if ~isempty(bad)
+    error('Check the inputs:\n  - %s', strjoin(bad', sprintf('\n  - ')));
+end
+
 R        = gas_R;
 g        = gas_gamma;
 T        = T_inlet_C + 273.15;          % [K]
@@ -125,7 +157,11 @@ mdot = @(A, Pu, Pd) Cdf(Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);
 Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ (Cdf(Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);
 s    = sind(th_deg);  sc = sind(th_deg)*cosd(th_deg);
 Aseat  = @(x, d) pi * max(x,0) .* s .* (d - max(x,0)*sc);
-stroke = @(A, d) (d - sqrt(d.^2 - 4*sc*A/(pi*s))) / (2*sc);
+if sc < 1e-9                                              % flat seat (90 deg): A = pi*d*x
+    stroke = @(A, d) A ./ (pi*d*s);
+else                                                      % cone: solve the area formula for the stroke
+    stroke = @(A, d) (d - sqrt(d.^2 - 4*sc*A/(pi*s))) / (2*sc);
+end
 
 %% 6. DESIGN CALCULATION
 % --- absolute pressures and flow
@@ -156,6 +192,11 @@ A_b    = pi*d_bleed^2/4;
 m_b    = mdot(A_b, PLf, P2f);              % bleed (= pilot) flow at full opening
 m_bcr  = mdot(A_b, P2s + dP_crack, P2s);   % bleed flow when main valve cracks
 A_pilot = Areq(m_b, P1l, PLf);             % pilot flow area (P1 min, worst case)
+A_pilot_max = min(Aseat(d_pseat/4, d_pseat), pi*d_pseat^2/4);   % most the pilot seat can give
+if A_pilot > A_pilot_max
+    error(['Pilot seat too small: it must pass the bleed flow through %.3f mm2, but a %.2f mm seat gives at most %.3f mm2. ' ...
+           'Increase the pilot seat diameter or reduce the bleed orifice.'], A_pilot*1e6, d_pseat*1e3, A_pilot_max*1e6);
+end
 x_pilot = stroke(A_pilot, d_pseat);        % pilot stroke at full flow
 
 % --- pilot piston and pilot spring
@@ -178,12 +219,20 @@ sp(1).name = 'Main spring';   sp(1).k = k_main;
 sp(1).F    = [F_m0, F_m0 + k_main*x_main_max];                   % preload, max force
 sp(2).name = 'Pilot spring';  sp(2).k = k_pilot;
 sp(2).F    = [F_p0, P2_adj(2)*A_pp + (P1h - P2_adj(2) - Pamb)*A_ps + k_pilot*d_pseat/4];
+C_min = 4;                                                       % smallest spring index that can be wound
 for j = 1:2
-    for d = 0.2e-3:0.05e-3:20e-3                                % try wire sizes
+    sp(j).found = false;
+    for d = 0.2e-3:0.05e-3:40e-3                                % try wire sizes, smallest first
         D  = (G_spring*d^4 / (8*n_active*sp(j).k))^(1/3);         % coil diameter from rate
-        C  = D/d;  Kw = (4*C-1)/(4*C-4) + 0.615/C;
+        C  = D/d;
+        if C < C_min, continue; end                              % coil too tight for this wire: try a thicker wire
+        Kw = (4*C-1)/(4*C-4) + 0.615/C;
         tau = 8*sp(j).F(2)*D*Kw / (pi*d^3);
-        if tau <= tau_all, break; end
+        if tau <= tau_all, sp(j).found = true; break; end
+    end
+    if ~sp(j).found
+        error('%s: no wire up to 40 mm gives the rate %.1f N/mm within the stress and index limits. Change the active coils or the spring rate.', ...
+              sp(j).name, sp(j).k/1e3);
     end
     sp(j).d = d;  sp(j).D = D;  sp(j).C = C;  sp(j).tau = tau;
     sp(j).n_total  = n_active + 2;                               % closed + ground ends
@@ -249,7 +298,9 @@ if run_check_sim == 1
 c_main  = 2*zeta*sqrt(k_main*mass_main);    % damping from damping ratio
 c_pilot = 2*zeta*sqrt(k_pilot*mass_pilot);
 
-dt = 1e-5;  t_end = 12;  N = round(t_end/dt) + 1;  t = (0:N-1)'*dt;
+w_max = max(sqrt(k_main/mass_main), sqrt(k_pilot/mass_pilot));      % highest natural frequency [rad/s]
+dt = min(1e-5, 0.1/w_max);                                           % time step small enough for the stiffest spring
+t_end = 12;  N = round(t_end/dt) + 1;  t = (0:N-1)'*dt;
 % scenario: inlet pressure and flow demand steps
 P1t   = P1n*ones(N,1);  P1t(t >= 4) = P1l;  P1t(t >= 6) = P1h;
 mdem  = zeros(N,1);  mdem(t >= 0.5) = 0.5*m;  mdem(t >= 2) = m;
@@ -273,8 +324,8 @@ for n = 1:N
     % save
     P2(n) = P2_;  PL(n) = PL_;  xm(n) = xm_;  xp(n) = xp_;  m_m(n) = mm_;  m_b_t(n) = mb_;
     % step forward in time (Euler)
-    P2_ = P2_ + dP2*dt;
-    PL_ = PL_ + dPL*dt;
+    P2_ = max(P2_ + dP2*dt, 0.05*Pamb);     % (a pressure can never go below zero)
+    PL_ = max(PL_ + dPL*dt, 0.05*Pamb);
     vm_ = vm_ + Fm/mass_main*dt;    xm_ = xm_ + vm_*dt;
     vp_ = vp_ + Fp/mass_pilot*dt;   xp_ = xp_ + vp_*dt;
     if xm_ < 0,          xm_ = 0;          vm_ = max(vm_, 0);  end   % main valve on seat

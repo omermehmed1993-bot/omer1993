@@ -94,7 +94,34 @@ t_print_s        = [0.02 0.05 0.1 0.15 0.2 0.3 0.5 1.0 2.0];   % times printed i
 
 %% ===================== END OF INPUTS ======================================
 
-%% 6. UNIT CONVERSION TO SI (do not edit)
+%% 6. INPUT CHECKS AND UNIT CONVERSION TO SI (do not edit)
+% Every row: a condition that must be true, and the message shown if it is not.
+checks = {
+    (P1_barg > 0),                                        'Inlet pressure must be > 0 bar(g).'
+    (T1_K > 0 && T_start_K > 0),                          'Temperatures must be > 0 K.'
+    (m_design_kgs > 0),                                   'Design flow must be > 0.'
+    (t_ramp_s >= 0),                                      'Inlet pressure rise time cannot be negative.'
+    (gas_R > 0 && gas_gamma > 1 && P_atm_bar > 0),        'Gas constant and ambient pressure must be > 0 and the ratio of specific heats > 1.'
+    (any(flow_coeff_law == [1 2 3])),                     'flow_coeff_law must be 1, 2 or 3.'
+    (Cd_constant > 0 && Cd_constant <= 1),                'Cd_constant must be > 0 and at most 1.'
+    (Pr_set_barg > 0 && Pr_set_barg < P1_barg),           'The regulated pressure setting must be > 0 and below the inlet pressure.'
+    (d_pilot_seat_mm > 0 && x_pilot_max_mm > 0),          'Pilot seat diameter and pilot stroke must be > 0.'
+    (D_pilot_pist_mm > d_pilot_seat_mm),                  'Pilot piston diameter must be larger than the pilot seat diameter.'
+    (k_pilot_Nmm > 0 && m_pilot_g > 0),                   'Pilot spring rate and pilot mass must be > 0.'
+    (d_bleed_mm >= 0),                                    'Bleed orifice diameter cannot be negative.'
+    (seat_angle_deg > 0 && seat_angle_deg <= 90),         'Seat angle must be between 0 and 90 deg (90 = flat seat).'
+    (d_main_seat_mm > 0 && D_main_pist_mm > 0 && x_main_max_mm > 0), 'Main seat diameter, piston diameter and stroke must be > 0.'
+    (k_main_Nmm > 0 && m_main_g > 0),                     'Main spring rate and main valve mass must be > 0.'
+    (x_main_design_mm >= 0 && x_main_design_mm < x_main_max_mm), ...
+        'The piston design displacement must be at least 0 and smaller than the piston stroke (at full stroke the valve is closed).'
+    (V_chamber_cm3 > 0 && V_outlet_L > 0),                'Volumes must be > 0.'
+    (zeta >= 0 && t_end_s > 0 && dt_s > 0),               'Damping ratio cannot be negative; simulated time and time step must be > 0.'
+    };
+bad = checks(~[checks{:,1}], 2);
+if ~isempty(bad)
+    error('Check the inputs:\n  - %s', strjoin(bad', sprintf('\n  - ')));
+end
+
 R     = gas_R;   g = gas_gamma;
 Pamb  = P_atm_bar*1e5;                    % [Pa]
 P1    = P1_barg*1e5 + Pamb;               % [Pa abs]
@@ -110,7 +137,7 @@ A_mp  = pi*(D_main_pist_mm/1e3)^2/4;      % big piston area [m2]
 A_bore = pi*d_ms^2/4;                     % main seat bore area [m2]
 k_m   = k_main_Nmm*1e3;        m_m = m_main_g/1e3;     xm_des = x_main_design_mm/1e3;
 V_c0  = V_chamber_cm3/1e6;     V_out = V_outlet_L/1e3;
-dt    = dt_s;
+dt    = min(dt_s, 0.1/max(sqrt(k_p/m_p), sqrt(k_m/m_m)));   % time step, reduced if the springs are too stiff for it
 
 %% 7. GAS FLOW FUNCTIONS
 f     = sqrt(g)*(2/(g+1))^((g+1)/(2*(g-1)));
@@ -134,6 +161,11 @@ Acone = @(x, d) pi*max(x,0).*s.*(d - max(x,0)*sc);     % conical seat flow area
 % --- pilot spring preload: the adjusting screw is set so that the regulator
 %     holds Pr_set while it feeds the bleed flow
 m_bleed_set = mdot(A_b, Prset, Pamb, T1);                 % bleed flow at the set pressure
+m_pilot_max = mdot(min(Acone(xp_max, d_ps), A_ps), P1, Prset, T1);   % most the pilot can feed at its full stroke
+if m_pilot_max <= m_bleed_set
+    error(['Pilot regulator too small to hold %.2f bar(g): fully open it feeds %.3f g/s, but the bleed orifice takes %.3f g/s. ' ...
+           'Increase the pilot seat diameter or pilot stroke, or reduce the bleed orifice.'], Pr_set_barg, m_pilot_max*1e3, m_bleed_set*1e3);
+end
 xp_set = 0;                                               % pilot stroke needed for that flow
 for it = 1:60                                             % bisection on the stroke
     if it == 1, lo = 0; hi = xp_max; end
@@ -144,21 +176,23 @@ F_p0 = (Prset - Pamb)*A_pp + (P1 - Prset)*A_ps + k_p*xp_set;   % pilot spring fo
 
 % --- main spring preload: set so that the piston sits at its design
 %     displacement when the regulated pressure acts on it
-if xm_des < 0 || xm_des > xm_max
-    error('Design displacement must be between 0 and the piston stroke (%.2f mm).', xm_max*1e3);
-end
 F_m0 = (Prset - Pamb)*A_mp - k_m*xm_des;                   % main spring preload (no pressure, valve fully open)
 open_des = xm_max - xm_des;                                % valve opening at the design point
 if F_m0 < 0
     error(['Piston too small or spring too stiff: %.2f bar(g) on the piston gives %.0f N, ' ...
-           'but the spring needs %.0f N at %.2f mm.'], Pr_set_barg, (Prset - Pamb)*A_mp, k_m*xm_des, xm_des*1e3);
+           'but the spring needs %.0f N to be compressed by %.2f mm. ' ...
+           'Increase the piston diameter, reduce the spring rate or reduce the design displacement.'], ...
+           Pr_set_barg, (Prset - Pamb)*A_mp, k_m*xm_des, xm_des*1e3);
 end
 
 % --- load: orifice to ambient that passes the design flow at the design displacement
 A_main_design = min(Acone(open_des, d_ms), A_bore);        % main valve flow area at the design point
-if mdot(A_main_design, P1, pcr*P1, T1) < m_design_kgs
-    error(['Main valve opening too small at the design point: %.2f mm opening (%.0f mm2) cannot pass ' ...
-           '%.3f kg/s at this inlet pressure.'], open_des*1e3, A_main_design*1e6, m_design_kgs);
+m_main_max = mdot(A_main_design, P1, pcr*P1, T1);          % most that opening can pass (choked)
+if m_main_max < m_design_kgs
+    error(['Main valve opening too small at the design point: %.2f mm opening (%.0f mm2) passes at most %.3f kg/s ' ...
+           'at %.2f bar(g) inlet, but the design flow is %.3f kg/s. Increase the seat diameter or piston stroke, ' ...
+           'reduce the design displacement, raise the inlet pressure or lower the design flow.'], ...
+           open_des*1e3, A_main_design*1e6, m_main_max, P1_barg, m_design_kgs);
 end
 lo = Pamb; hi = P1;                                       % find the outlet pressure P2
 for it = 1:60
@@ -184,7 +218,11 @@ fprintf('Load orifice (effective area)           %8.1f mm2  (passes %.3f kg/s at
 %% 9. DYNAMIC SIMULATION (step by step in time)
 N  = round(t_end_s/dt) + 1;
 t  = (0:N-1)'*dt;
-P1t = Pamb + (P1 - Pamb)*min(t/t_ramp_s, 1);              % inlet pressure ramp
+if t_ramp_s > 0
+    P1t = Pamb + (P1 - Pamb)*min(t/t_ramp_s, 1);          % inlet pressure ramp
+else
+    P1t = P1*ones(N,1);                                   % inlet pressure applied at once
+end
 [Pr_h, Tr_h, P2_h, T2_h, xp_h, xm_h, mp_h, mb_h, mm_h, ml_h] = deal(zeros(N,1));
 
 % initial state: everything at ambient pressure, valves at rest
@@ -197,7 +235,7 @@ for n = 1:N
     Pin = P1t(n);
 
     % STEP 1 - pilot regulator: flow from the inlet into the piston chamber
-    A_pil = Acone(xp, d_ps);
+    A_pil = min(Acone(xp, d_ps), A_ps);
     m_pil = mdot(A_pil, Pin, Pr, T1);
 
     % STEP 2 - bleed orifice: flow from the piston chamber to ambient
@@ -230,8 +268,8 @@ for n = 1:N
     mp_h(n) = m_pil;  mb_h(n) = m_bl;  mm_h(n) = m_main;  ml_h(n) = m_load;
 
     % STEP 9 - go one time step forward (Euler)
-    Pr = Pr + dPr*dt;   Tr = Tr + dTr*dt;
-    P2 = P2 + dP2*dt;   T2 = T2 + dT2*dt;
+    Pr = max(Pr + dPr*dt, 0.05*Pamb);   Tr = max(Tr + dTr*dt, 50);    % (pressure and temperature stay positive)
+    P2 = max(P2 + dP2*dt, 0.05*Pamb);   T2 = max(T2 + dT2*dt, 50);
     vp = vp + Fp/m_p*dt;   xp = xp + vp*dt;
     vm = vm + Fm/m_m*dt;   xm = xm + vm*dt;
     if xp < 0,      xp = 0;      vp = max(vp, 0);  end    % pilot on its seat
@@ -271,14 +309,27 @@ fprintf('7. OUTLET             P2 = %.3f bar(g), T2 = %.1f K, flow to the load %
         bg(P2_h(n)), T2_h(n), ml_h(n), ch{(r_ld <= pcr)+1});
 fprintf('\nREGULATOR OUTPUT      Pr = %.3f bar(g), flow %.3f g/s\n', bg(Pr_h(n)), mp_h(n)*1e3);
 fprintf('MAIN VALVE OUTPUT     P2 = %.3f bar(g), flow %.4f kg/s\n', bg(P2_h(n)), ml_h(n));
-w = t >= t_end_s - 0.2;
-fprintf('Ripple in the last 0.2 s: regulated pressure %.4f bar, outlet pressure %.4f bar\n', ...
-        (max(Pr_h(w)) - min(Pr_h(w)))/1e5, (max(P2_h(w)) - min(P2_h(w)))/1e5);
+% --- is the result steady? compare the last 10 % of the time with the 10 % before it
+w1 = t >= 0.9*t_end_s;   w0 = t >= 0.8*t_end_s & t < 0.9*t_end_s;
+ripple = [max(Pr_h(w1)) - min(Pr_h(w1)), max(P2_h(w1)) - min(P2_h(w1))]/1e5;        % [bar]
+drift  = abs([mean(Pr_h(w1)) - mean(Pr_h(w0)), mean(P2_h(w1)) - mean(P2_h(w0))])/1e5; % [bar]
+fprintf('Last 10 %% of the time: ripple of regulated / outlet pressure %.4f / %.4f bar, drift %.4f / %.4f bar\n', ripple, drift);
 i_des = find(abs(xm_h - xm_des) <= 0.02*xm_max & t > t_ramp_s, 1);
 if abs(xm_h(n) - xm_des) > 0.02*xm_max
-    fprintf('Big piston did NOT settle at its design displacement (%.3f mm instead of %.3f mm).\n', xm_h(n)*1e3, xm_des*1e3);
+    fprintf('Big piston is NOT at its design displacement at the end (%.3f mm instead of %.3f mm).\n', xm_h(n)*1e3, xm_des*1e3);
 else
     fprintf('Big piston first reaches its design displacement after %.3f s.\n', t(i_des));
+end
+if max(ripple) < 0.01 && max(drift) < 0.005
+    fprintf('RESULT: steady - the values above are the final operating point.\n');
+elseif max(drift) >= 0.5*max(ripple)
+    fprintf('RESULT: NOT SETTLED YET - pressures are still changing at the end. Increase t_end_s.\n');
+else
+    fprintf(['RESULT: OSCILLATING - the values above are not a steady operating point. Try a larger piston chamber volume,\n' ...
+             '        more damping (zeta), a softer pilot spring or a smaller pilot seat.\n']);
+end
+if dt < dt_s
+    fprintf('Note: the time step was reduced from %.1e to %.1e s because of the stiff springs.\n', dt_s, dt);
 end
 
 %% 12. PLOTS
