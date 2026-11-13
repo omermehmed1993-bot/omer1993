@@ -24,7 +24,7 @@
 % bleed orifice, pilot seat + stroke, pilot piston, pilot spring,
 % spring wire / coil geometry; plus droop and supply-pressure effect.
 %
-% Flow through any orifice: m = Cd*A*f(g)*N*Pu/sqrt(R*T), Cd = 1 - 0.7*Pd/Pu
+% Flow through any orifice: m = Cd*A*f(g)*N*Pu/sqrt(R*T), Cd from input "flow_coeff_law"
 % Conical seat flow area:   A = pi*x*sin(th)*(d - x*sin(th)*cos(th))
 % Runs in MATLAB or GNU Octave, no toolboxes needed.
 
@@ -50,6 +50,12 @@ droop_bar        = 0.10;     % allowed outlet drop, no flow -> full flow [bar]
 %% 2. INPUTS - DESIGN CHOICES (typical values)
 v_port_max_ms    = 30;       % max gas velocity in the ports        [m/s]
 seat_angle_deg   = 45;       % seat angle, main and pilot valve     [deg]
+flow_coeff_law   = 1;        % flow coefficient Cd of every opening:
+                             %   1 = thesis rule      Cd = 1 - 0.7*Pd/Pu
+                             %   2 = constant value   Cd = Cd_constant
+                             %   3 = Perry rule for a sharp-edged orifice (0.84 choked ... 0.60 at no pressure drop);
+                             %       this is the variable-Cq option of the Amesim pneumatic library
+Cd_constant      = 0.50;     % used only with law 2. 0.50 reproduces the Swagelok RHPS sizing rule [-]
 stroke_to_seat   = 0.15;     % main stroke / main seat diameter at full flow [-]
 piston_to_seat   = 2.0;      % main piston diameter / main seat diameter     [-]
 dP_crack_bar     = 0.2;      % loading - outlet pressure when main valve starts to open [bar]
@@ -105,8 +111,16 @@ f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));
 pcr  = (2/(g+1))^(g/(g-1));                            % critical pressure ratio
 Nden = (g-1)/2 * (2/(g+1))^((g+1)/(g-1));
 Nf   = @(r) (r <= pcr) + (r > pcr) .* sqrt(max(r.^(2/g) - r.^((g+1)/g), 0) / Nden);
-mdot = @(A, Pu, Pd) (1 - 0.7*Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);
-Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ ((1 - 0.7*Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);
+% flow coefficient Cd as a function of the pressure ratio r = Pd/Pu
+if flow_coeff_law == 1
+    Cdf = @(r) 1 - 0.7*r;                                  % thesis rule
+elseif flow_coeff_law == 2
+    Cdf = @(r) Cd_constant + 0*r;                          % constant value
+else
+    Cdf = @(r) 0.8414 - 0.1002*r + 0.8415*r.^2 - 3.9*r.^3 + 4.6001*r.^4 - 1.6827*r.^5;   % Perry, sharp-edged orifice
+end
+mdot = @(A, Pu, Pd) Cdf(Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);
+Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ (Cdf(Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);
 s    = sind(th_deg);  sc = sind(th_deg)*cosd(th_deg);
 Aseat  = @(x, d) pi * max(x,0) .* s .* (d - max(x,0)*sc);
 stroke = @(A, d) (d - sqrt(d.^2 - 4*sc*A/(pi*s))) / (2*sc);
@@ -178,7 +192,9 @@ end
 
 %% 7. DESIGN REPORT
 b = @(P) P/1e5;  mm = @(x) x*1e3;  mm2 = @(A) A*1e6;
+law_txt = {'thesis rule Cd = 1 - 0.7*Pd/Pu', sprintf('constant Cd = %.2f', Cd_constant), 'Perry rule (sharp-edged orifice)'};
 fprintf('================ PILOT-OPERATED REGULATOR DESIGN ================\n');
+fprintf('Flow coefficient: %s\n', law_txt{flow_coeff_law});
 fprintf('Inlet %.1f bar(g) (min %.1f, max %.1f)  ->  outlet %.2f bar(g),  %.0f Nm3/h = %.4f kg/s\n', ...
         b(P1_nom), b(P1_min), b(P1_max), b(P2_set), Q, m);
 fprintf('\nPORTS\n');

@@ -34,7 +34,7 @@
 %    flow passes when the piston is at its design displacement.
 %  - Seal friction is represented by a damping ratio.
 %
-% Flow through any opening:  m = Cd*A*f(g)*N*Pu/sqrt(R*Tu),  Cd = 1 - 0.7*Pd/Pu
+% Flow through any opening:  m = Cd*A*f(g)*N*Pu/sqrt(R*Tu),  Cd from input "flow_coeff_law"
 % Conical seat flow area:    A = pi*x*sin(th)*(d - x*sin(th)*cos(th))
 % Gas volume:  dP/dt = [g*R*(Tin*m_in - T*m_out) - g*P*dV/dt] / V
 %              dT/dt = R*T^2/(V*P)*[(g*Tin/T - 1)*m_in - (g-1)*m_out] - (g-1)*T/V*dV/dt
@@ -55,6 +55,12 @@ gas_R            = 287;      % gas constant              [J/(kg K)]  air 287
 gas_gamma        = 1.4;      % ratio of specific heats   [-]         air 1.4 (1.38 at 600 K)
 P_atm_bar        = 1.01325;  % ambient pressure          [bar(a)]
 T_start_K        = 293;      % gas temperature inside the valve before start [K]
+flow_coeff_law   = 1;        % flow coefficient Cd of every opening:
+                             %   1 = thesis rule      Cd = 1 - 0.7*Pd/Pu
+                             %   2 = constant value   Cd = Cd_constant
+                             %   3 = Perry rule for a sharp-edged orifice (0.84 choked ... 0.60 at no pressure drop);
+                             %       this is the variable-Cq option of the Amesim pneumatic library
+Cd_constant      = 0.50;     % used only with law 2. 0.50 reproduces the Swagelok RHPS sizing rule [-]
 
 %% 3. INPUTS - PILOT REGULATOR SIZE
 Pr_set_barg      = 5;        % regulated pressure setting        [bar(g)]
@@ -110,7 +116,15 @@ pcr   = (2/(g+1))^(g/(g-1));              % critical pressure ratio (choked belo
 Nden  = (g-1)/2*(2/(g+1))^((g+1)/(g-1));
 Nf    = @(r) (r <= pcr) + (r > pcr).*sqrt(max(r.^(2/g) - r.^((g+1)/g), 0)/Nden);
 % mass flow through area A from pressure Pu (temperature Tu) to pressure Pd; zero if Pu <= Pd
-mdot  = @(A, Pu, Pd, Tu) (Pu > Pd) .* (1 - 0.7*min(Pd./Pu,1)) .* A * f .* Nf(min(Pd./Pu,1)) .* Pu ./ sqrt(R*Tu);
+% flow coefficient Cd as a function of the pressure ratio r = Pd/Pu
+if flow_coeff_law == 1
+    Cdf = @(r) 1 - 0.7*r;                                  % thesis rule
+elseif flow_coeff_law == 2
+    Cdf = @(r) Cd_constant + 0*r;                          % constant value
+else
+    Cdf = @(r) 0.8414 - 0.1002*r + 0.8415*r.^2 - 3.9*r.^3 + 4.6001*r.^4 - 1.6827*r.^5;   % Perry, sharp-edged orifice
+end
+mdot  = @(A, Pu, Pd, Tu) (Pu > Pd) .* Cdf(min(Pd./Pu,1)) .* A * f .* Nf(min(Pd./Pu,1)) .* Pu ./ sqrt(R*Tu);
 s     = sind(seat_angle_deg);   sc = sind(seat_angle_deg)*cosd(seat_angle_deg);
 Acone = @(x, d) pi*max(x,0).*s.*(d - max(x,0)*sc);     % conical seat flow area
 % main valve opening from the piston displacement x
@@ -155,12 +169,14 @@ for it = 1:60
     if mdot(A_main_design, P1, P2_design, T1) > m_design_kgs, lo = P2_design; else, hi = P2_design; end
 end
 r_load = Pamb/P2_design;
-A_load = m_design_kgs*sqrt(R*T1) / ((1 - 0.7*r_load)*f*Nf(r_load)*P2_design);   % load orifice area
+A_load = m_design_kgs*sqrt(R*T1) / (Cdf(r_load)*f*Nf(r_load)*P2_design);   % load orifice area
 
 % --- damping from the damping ratio
 c_p = 2*zeta*sqrt(k_p*m_p);   c_m = 2*zeta*sqrt(k_m*m_m);
 
+law_txt = {'thesis rule Cd = 1 - 0.7*Pd/Pu', sprintf('constant Cd = %.2f', Cd_constant), 'Perry rule (sharp-edged orifice)'};
 fprintf('================ SETTINGS FROM THE INPUTS ================\n');
+fprintf('Flow coefficient: %s\n', law_txt{flow_coeff_law});
 fprintf('Pilot spring force at closed position   %8.1f N   (set for %.2f bar(g) with bleed flow %.3f g/s)\n', F_p0, Pr_set_barg, m_bleed_set*1e3);
 action_txt = {'piston opens the valve', 'piston closes the valve'};
 fprintf('Main spring force at rest position      %8.1f N   (piston at %.2f mm of %.2f mm at %.2f bar(g); %s)\n', ...
