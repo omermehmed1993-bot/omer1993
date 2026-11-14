@@ -24,7 +24,11 @@
 % bleed orifice, pilot seat + stroke, pilot piston, pilot spring,
 % spring wire / coil geometry; plus droop and supply-pressure effect.
 %
-% Flow through any orifice: m = Cd*A*f(g)*N*Pu/sqrt(R*T), Cd from input "flow_coeff_law"
+% Flow through any opening, ISO 6358 form (r = Pd/Pu):
+%      m = C*rho0*Pu*sqrt(T0/Tu)                               choked,   r <= b
+%      m = C*rho0*Pu*sqrt(T0/Tu)*(1 - ((r-b)/(1-b))^2)^m       subsonic, r >  b
+%   with the sonic conductance of an opening of area A:  C = Cd*A*f(g)/(rho0*sqrt(R*T0))
+%   (Cd from input "flow_coeff_law";  b and m from inputs "b_critical" and "m_subsonic")
 % Conical seat flow area:   A = pi*x*sin(th)*(d - x*sin(th)*cos(th)),
 %                           d = seat diameter = OUTER (large) sealing diameter of the poppet
 % Runs in MATLAB or GNU Octave, no toolboxes needed.
@@ -58,6 +62,10 @@ flow_coeff_law   = 2;        % flow coefficient Cd of every opening:
                              %       this is the variable-Cq option of the Amesim pneumatic library
 Cd_constant      = 0.70;     % used only with law 2 [-]. 0.70 = value of the test-validated regulator model
                              % (Manimaran & Hiremath 2018); 0.50 = conservative Swagelok RHPS sizing rule
+b_critical       = 0.528;    % critical back-pressure ratio b (ISO 6358): the flow is choked when Pd/Pu <= b.
+                             %   ideal nozzle: 0.528 for air and nitrogen, 0.487 for helium;
+                             %   measured valves are often lower (0.2 - 0.5): use the test or catalogue value if you have it
+m_subsonic       = 0.5;      % subsonic index m (ISO 6358); 0.5 for a fixed flow path
 stroke_to_seat   = 0.15;     % main stroke / main seat diameter at full flow [-]
 piston_to_seat   = 2.0;      % main piston diameter / main seat diameter     [-]
 dP_crack_bar     = 0.2;      % loading - outlet pressure when main valve starts to open [bar]
@@ -68,6 +76,8 @@ D_pilot_pist_mm  = 25;       % pilot piston diameter                [mm]
 G_spring_GPa     = 79.3;     % spring material shear modulus        [GPa]  (steel)
 tau_allow_MPa    = 600;      % spring allowed shear stress          [MPa]
 n_active_coils   = 6;        % active coils of each spring          [-]
+adj_screw_pitch_mm = 1.25;   % thread pitch of the pilot adjusting screw [mm]
+                             %   (M4 0.7, M5 0.8, M6 1.0, M8 1.25, M10 1.5, M12 1.75 - ISO 4029 set screws)
 
 %% 3. INPUTS - DESIGN CHECK SIMULATION (optional)
 run_check_sim    = 1;        % 1 = run the time simulation check, 0 = sizing only
@@ -104,6 +114,8 @@ checks = {
     G_spring_GPa > 0 && tau_allow_MPa > 0 && n_active_coils >= 1, 'Spring data must be > 0 and active coils >= 1.'
     any(flow_coeff_law == [1 2 3]),                     'flow_coeff_law must be 1, 2 or 3.'
     Cd_constant > 0 && Cd_constant <= 1,                'Cd_constant must be > 0 and at most 1.'
+    b_critical > 0 && b_critical < 1 && m_subsonic > 0, 'b_critical must be between 0 and 1 and m_subsonic > 0.'
+    adj_screw_pitch_mm > 0,                             'Adjusting screw pitch must be > 0.'
     m_main_g > 0 && m_pilot_g > 0 && zeta >= 0 && V_outlet_L > 0 && V_loading_cm3 > 0, ...
                                                         'Masses and volumes must be > 0 and the damping ratio >= 0.'
     };
@@ -140,11 +152,13 @@ mass_pilot = m_pilot_g / 1e3;
 V_out    = V_outlet_L / 1e3;            % [m3]
 V_L0     = V_loading_cm3 / 1e6;
 
-%% 5. GAS FLOW FUNCTIONS
-f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));
-pcr  = (2/(g+1))^(g/(g-1));                            % critical pressure ratio
-Nden = (g-1)/2 * (2/(g+1))^((g+1)/(g-1));
-Nf   = @(r) (r <= pcr) + (r > pcr) .* sqrt(max(r.^(2/g) - r.^((g+1)/g), 0) / Nden);
+%% 5. GAS FLOW FUNCTIONS (ISO 6358 form)
+T0   = 293.15;  p0 = 1e5;  rho0 = p0/(R*T0);            % ISO 8778 reference atmosphere (ANR), density of this gas
+f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));          % choked-flow function of the gas
+b_th = (2/(g+1))^(g/(g-1));                            % critical ratio of an ideal nozzle (for information)
+b_cr = b_critical;   m_ix = m_subsonic;
+% ISO 6358 subsonic factor: 1 when choked (r <= b), smaller above
+Nf   = @(r) (r <= b_cr) + (r > b_cr) .* max(1 - ((min(r,1) - b_cr)/(1 - b_cr)).^2, 0).^m_ix;
 % flow coefficient Cd as a function of the pressure ratio r = Pd/Pu
 if flow_coeff_law == 1
     Cdf = @(r) 1 - 0.7*r;                                  % thesis rule
@@ -153,6 +167,9 @@ elseif flow_coeff_law == 2
 else
     Cdf = @(r) 0.8414 - 0.1002*r + 0.8415*r.^2 - 3.9*r.^3 + 4.6001*r.^4 - 1.6827*r.^5;   % Perry, sharp-edged orifice
 end
+% sonic conductance of an opening [m3/(s Pa) ANR] and the equivalent Cv of ANSI/ISA 75.01 (with xT = (1 - b)/Fk)
+Cson = @(A, r) Cdf(r) .* A * f / (rho0*sqrt(R*T0));
+Cv_of = @(C) 62472 * C * rho0*sqrt(R*T0) / sqrt(1 - b_cr);
 mdot = @(A, Pu, Pd) Cdf(Pd./Pu) .* A * f .* Nf(Pd./Pu) .* Pu / sqrt(R*T);
 Areq = @(m, Pu, Pd) m * sqrt(R*T) ./ (Cdf(Pd./Pu) * f .* Nf(Pd./Pu) .* Pu);
 s    = sind(th_deg);  sc = sind(th_deg)*cosd(th_deg);
@@ -206,6 +223,16 @@ k_pilot = droop * A_pp / x_pilot;          % pilot spring rate for the allowed d
 F_p0   = P2_set*A_pp + (P1n - P2s)*A_ps;   % pilot spring force at set point (closed)
 SPE    = A_ps / A_pp;                      % supply pressure effect [Pa outlet / Pa inlet]
 
+% --- pilot adjusting screw: one turn moves the spring seat by one pitch
+bar_per_turn = k_pilot * (adj_screw_pitch_mm/1e3) / A_pp / 1e5;       % outlet pressure change per turn [bar]
+turns_range  = (P2_adj(2) - P2_adj(1)) / 1e5 / bar_per_turn;          % turns to cover the adjustment range
+
+% --- ISO 6358 flow-rate characteristics of the openings
+C_main  = Cson(A_main,  P2f/P1l);          % main valve at full stroke
+C_pilot = Cson(A_pilot, PLf/P1l);          % pilot valve at full flow
+C_bleed = Cson(A_b,     P2f/PLf);          % bleed orifice
+V_test  = 5e5 * C_main;                    % tank volume for an ISO 6358-2 discharge test of the main valve [m3]
+
 % --- checks
 dP_min_needed = dP_full + droop;           % P1 - P2 needed for full opening (excl. valve loss)
 ok_loading = (P1l - P2f) > dP_full;
@@ -246,6 +273,7 @@ b = @(P) P/1e5;  mm = @(x) x*1e3;  mm2 = @(A) A*1e6;
 law_txt = {'thesis rule Cd = 1 - 0.7*Pd/Pu', sprintf('constant Cd = %.2f', Cd_constant), 'Perry rule (sharp-edged orifice)'};
 fprintf('================ PILOT-OPERATED REGULATOR DESIGN ================\n');
 fprintf('Flow coefficient: %s\n', law_txt{flow_coeff_law});
+fprintf('Flow law: ISO 6358 with critical back-pressure ratio b = %.3f and subsonic index m = %.2f (ideal nozzle for this gas: b = %.3f)\n', b_cr, m_ix, b_th);
 fprintf('Inlet %.1f bar(g) (min %.1f, max %.1f)  ->  outlet %.2f bar(g),  %.0f Nm3/h = %.4f kg/s\n', ...
         b(P1_nom), b(P1_min), b(P1_max), b(P2_set), Q, m);
 fprintf('\nPORTS\n');
@@ -268,11 +296,18 @@ fprintf('  Pilot stroke at full flow    %8.4f mm\n', mm(x_pilot));
 fprintf('  Pilot piston diameter        %8.1f mm   (area %.0f mm2)\n', mm(D_ppist), mm2(A_pp));
 fprintf('  Pilot spring force at set    %8.1f N\n', F_p0);
 fprintf('  Pilot spring rate            %8.2f N/mm\n', k_pilot/1e3);
+fprintf('  Adjusting screw              %8.3f bar per turn  (pitch %.2f mm; %.1f turns = %.1f mm cover %g - %g bar(g))\n', ...
+        bar_per_turn, adj_screw_pitch_mm, turns_range, turns_range*adj_screw_pitch_mm, b(P2_adj(1)), b(P2_adj(2)));
 fprintf('\nPERFORMANCE (design values)\n');
 fprintf('  Droop, no flow -> full flow  %8.3f bar\n', b(droop));
 fprintf('  Supply pressure effect       %8.4f bar outlet per bar inlet  (%.3f bar over %g-%g bar(g))\n', ...
         SPE, SPE*b(P1_max - P1_min), b(P1_min), b(P1_max));
 fprintf('  Min. inlet-outlet difference %8.2f bar for full opening\n', b(dP_min_needed));
+fprintf('\nFLOW-RATE CHARACTERISTICS (ISO 6358; sonic conductance C at 20 degC, 1 bar reference)\n');
+fprintf('  Main valve at full stroke    C = %8.3f dm3/(s bar)   equivalent Cv = %.2f (ANSI/ISA 75.01)\n', C_main*1e8, Cv_of(C_main));
+fprintf('  Pilot valve at full flow     C = %8.4f dm3/(s bar)\n', C_pilot*1e8);
+fprintf('  Bleed orifice                C = %8.4f dm3/(s bar)\n', C_bleed*1e8);
+fprintf('  Tank for an ISO 6358-2 discharge test of the main valve: at least %.0f L\n', V_test*1e3);
 fprintf('\nSPRINGS          wire d   coil D   index C  active  total   free L  installed L  solid L  max stress\n');
 for j = 1:2
     fprintf('  %-13s %6.2f mm %6.1f mm %6.1f  %6d %6d %7.1f mm %8.1f mm %7.1f mm %6.0f MPa\n', ...

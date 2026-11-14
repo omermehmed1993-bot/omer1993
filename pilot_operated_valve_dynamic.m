@@ -35,7 +35,11 @@
 %    flow passes when the piston is at its design displacement.
 %  - Seal friction is represented by a damping ratio.
 %
-% Flow through any opening:  m = Cd*A*f(g)*N*Pu/sqrt(R*Tu),  Cd from input "flow_coeff_law"
+% Flow through any opening, ISO 6358 form (r = Pd/Pu):
+%      m = C*rho0*Pu*sqrt(T0/Tu)                               choked,   r <= b
+%      m = C*rho0*Pu*sqrt(T0/Tu)*(1 - ((r-b)/(1-b))^2)^m       subsonic, r >  b
+%   with the sonic conductance of an opening of area A:  C = Cd*A*f(g)/(rho0*sqrt(R*T0))
+%   (Cd from input "flow_coeff_law";  b and m from inputs "b_critical" and "m_subsonic")
 % Conical seat flow area:    A = pi*x*sin(th)*(d - x*sin(th)*cos(th)),
 %                            d = seat diameter = OUTER (large) sealing diameter of the poppet
 % Gas volume:  dP/dt = [g*R*(Tin*m_in - T*m_out) - g*P*dV/dt] / V
@@ -65,6 +69,11 @@ flow_coeff_law   = 2;        % flow coefficient Cd of every opening:
 Cd_constant      = 0.70;     % used only with law 2 [-]. 0.70 = value of the test-validated regulator model
                              % (Manimaran & Hiremath 2018); 0.50 = conservative Swagelok RHPS sizing rule
 
+b_critical       = 0.528;    % critical back-pressure ratio b (ISO 6358): the flow is choked when Pd/Pu <= b.
+                             %   ideal nozzle: 0.528 for air and nitrogen, 0.487 for helium;
+                             %   measured valves are often lower (0.2 - 0.5): use the test or catalogue value if you have it
+m_subsonic       = 0.5;      % subsonic index m (ISO 6358); 0.5 for a fixed flow path
+
 %% 3. INPUTS - PILOT REGULATOR SIZE
 Pr_set_barg      = 5;        % regulated pressure setting        [bar(g)]
 d_pilot_seat_mm  = 2.0;      % pilot seat diameter (outer sealing diameter) [mm]
@@ -74,6 +83,8 @@ k_pilot_Nmm      = 30;       % pilot spring rate                 [N/mm]
 m_pilot_g        = 30;       % pilot moving mass                 [g]
 d_bleed_mm       = 0.8;      % bleed orifice diameter (piston chamber to ambient) [mm]
 seat_angle_deg   = 45;       % seat angle, pilot and main valve  [deg]
+adj_screw_pitch_mm = 1.25;   % thread pitch of the pilot adjusting screw [mm]
+                             %   (M4 0.7, M5 0.8, M6 1.0, M8 1.25, M10 1.5, M12 1.75 - ISO 4029 set screws)
 
 %% 4. INPUTS - MAIN VALVE SIZE
 d_main_seat_mm   = 40;       % main valve seat diameter (outer sealing diameter) [mm]
@@ -104,6 +115,8 @@ checks = {
     (gas_R > 0 && gas_gamma > 1 && P_atm_bar > 0),        'Gas constant and ambient pressure must be > 0 and the ratio of specific heats > 1.'
     (any(flow_coeff_law == [1 2 3])),                     'flow_coeff_law must be 1, 2 or 3.'
     (Cd_constant > 0 && Cd_constant <= 1),                'Cd_constant must be > 0 and at most 1.'
+    (b_critical > 0 && b_critical < 1 && m_subsonic > 0), 'b_critical must be between 0 and 1 and m_subsonic > 0.'
+    (adj_screw_pitch_mm > 0),                             'Adjusting screw pitch must be > 0.'
     (Pr_set_barg > 0 && Pr_set_barg < P1_barg),           'The regulated pressure setting must be > 0 and below the inlet pressure.'
     (d_pilot_seat_mm > 0 && x_pilot_max_mm > 0),          'Pilot seat diameter and pilot stroke must be > 0.'
     (D_pilot_pist_mm > d_pilot_seat_mm),                  'Pilot piston diameter must be larger than the pilot seat diameter.'
@@ -139,11 +152,13 @@ k_m   = k_main_Nmm*1e3;        m_m = m_main_g/1e3;     xm_des = x_main_design_mm
 V_c0  = V_chamber_cm3/1e6;     V_out = V_outlet_L/1e3;
 dt    = min(dt_s, 0.1/max(sqrt(k_p/m_p), sqrt(k_m/m_m)));   % time step, reduced if the springs are too stiff for it
 
-%% 7. GAS FLOW FUNCTIONS
-f     = sqrt(g)*(2/(g+1))^((g+1)/(2*(g-1)));
-pcr   = (2/(g+1))^(g/(g-1));              % critical pressure ratio (choked below this)
-Nden  = (g-1)/2*(2/(g+1))^((g+1)/(g-1));
-Nf    = @(r) (r <= pcr) + (r > pcr).*sqrt(max(r.^(2/g) - r.^((g+1)/g), 0)/Nden);
+%% 7. GAS FLOW FUNCTIONS (ISO 6358 form)
+T0   = 293.15;  p0 = 1e5;  rho0 = p0/(R*T0);            % ISO 8778 reference atmosphere (ANR), density of this gas
+f    = sqrt(g) * (2/(g+1))^((g+1)/(2*(g-1)));          % choked-flow function of the gas
+b_th = (2/(g+1))^(g/(g-1));                            % critical ratio of an ideal nozzle (for information)
+b_cr = b_critical;   m_ix = m_subsonic;
+% ISO 6358 subsonic factor: 1 when choked (r <= b), smaller above
+Nf   = @(r) (r <= b_cr) + (r > b_cr) .* max(1 - ((min(r,1) - b_cr)/(1 - b_cr)).^2, 0).^m_ix;
 % mass flow through area A from pressure Pu (temperature Tu) to pressure Pd; zero if Pu <= Pd
 % flow coefficient Cd as a function of the pressure ratio r = Pd/Pu
 if flow_coeff_law == 1
@@ -153,6 +168,9 @@ elseif flow_coeff_law == 2
 else
     Cdf = @(r) 0.8414 - 0.1002*r + 0.8415*r.^2 - 3.9*r.^3 + 4.6001*r.^4 - 1.6827*r.^5;   % Perry, sharp-edged orifice
 end
+% sonic conductance of an opening [m3/(s Pa) ANR] and the equivalent Cv of ANSI/ISA 75.01 (with xT = (1 - b)/Fk)
+Cson = @(A, r) Cdf(r) .* A * f / (rho0*sqrt(R*T0));
+Cv_of = @(C) 62472 * C * rho0*sqrt(R*T0) / sqrt(1 - b_cr);
 mdot  = @(A, Pu, Pd, Tu) (Pu > Pd) .* Cdf(min(Pd./Pu,1)) .* A * f .* Nf(min(Pd./Pu,1)) .* Pu ./ sqrt(R*Tu);
 s     = sind(seat_angle_deg);   sc = sind(seat_angle_deg)*cosd(seat_angle_deg);
 Acone = @(x, d) pi*max(x,0).*s.*(d - max(x,0)*sc);     % conical seat flow area
@@ -187,7 +205,7 @@ end
 
 % --- load: orifice to ambient that passes the design flow at the design displacement
 A_main_design = min(Acone(open_des, d_ms), A_bore);        % main valve flow area at the design point
-m_main_max = mdot(A_main_design, P1, pcr*P1, T1);          % most that opening can pass (choked)
+m_main_max = mdot(A_main_design, P1, b_cr*P1, T1);         % most that opening can pass (choked)
 if m_main_max < m_design_kgs
     error(['Main valve opening too small at the design point: %.2f mm opening (%.0f mm2) passes at most %.3f kg/s ' ...
            'at %.2f bar(g) inlet, but the design flow is %.3f kg/s. Increase the seat diameter or piston stroke, ' ...
@@ -205,15 +223,26 @@ A_load = m_design_kgs*sqrt(R*T1) / (Cdf(r_load)*f*Nf(r_load)*P2_design);   % loa
 % --- damping from the damping ratio
 c_p = 2*zeta*sqrt(k_p*m_p);   c_m = 2*zeta*sqrt(k_m*m_m);
 
+% --- ISO 6358 flow-rate characteristics of the openings, and the pilot adjusting screw
+C_main  = Cson(A_main_design, P2_design/P1);                % main valve at the design opening
+C_pilot = Cson(Acone(xp_set, d_ps), Prset/P1);              % pilot at the set point
+C_bleed = Cson(A_b, Pamb/Prset);                            % bleed orifice
+C_load  = Cson(A_load, r_load);                             % load orifice
+bar_per_turn = k_p * (adj_screw_pitch_mm/1e3) / A_pp / 1e5; % regulated pressure change per screw turn [bar]
+
 law_txt = {'thesis rule Cd = 1 - 0.7*Pd/Pu', sprintf('constant Cd = %.2f', Cd_constant), 'Perry rule (sharp-edged orifice)'};
 fprintf('================ SETTINGS FROM THE INPUTS ================\n');
 fprintf('Flow coefficient: %s\n', law_txt{flow_coeff_law});
+fprintf('Flow law: ISO 6358 with critical back-pressure ratio b = %.3f and subsonic index m = %.2f (ideal nozzle for this gas: b = %.3f)\n', b_cr, m_ix, b_th);
 fprintf('Pilot spring force at closed position   %8.1f N   (set for %.2f bar(g) with bleed flow %.3f g/s)\n', F_p0, Pr_set_barg, m_bleed_set*1e3);
 fprintf('Main spring preload (valve fully open)  %8.1f N   (piston at %.2f mm of %.2f mm at %.2f bar(g))\n', ...
         F_m0, xm_des*1e3, xm_max*1e3, Pr_set_barg);
 fprintf('Valve starts to close / is fully closed at  %.2f / %.2f bar(g) on the big piston\n', F_m0/A_mp/1e5, (F_m0 + k_m*xm_max)/A_mp/1e5);
 fprintf('Main valve at the design point          %8.2f mm opening, flow area %.1f mm2\n', open_des*1e3, A_main_design*1e6);
 fprintf('Load orifice (effective area)           %8.1f mm2  (passes %.3f kg/s at outlet %.2f bar(g))\n', A_load*1e6, m_design_kgs, (P2_design-Pamb)/1e5);
+fprintf('Sonic conductance C (ISO 6358)          main valve %.2f, load %.2f, pilot %.4f, bleed %.4f dm3/(s bar)\n', C_main*1e8, C_load*1e8, C_pilot*1e8, C_bleed*1e8);
+fprintf('Main valve equivalent Cv (ISA 75.01)    %8.2f\n', Cv_of(C_main));
+fprintf('Pilot adjusting screw                   %8.3f bar per turn  (pitch %.2f mm)\n', bar_per_turn, adj_screw_pitch_mm);
 
 %% 9. DYNAMIC SIMULATION (step by step in time)
 N  = round(t_end_s/dt) + 1;
@@ -298,15 +327,15 @@ ch = {'not choked', 'choked'};
 fprintf('\n================ FINAL STATE AT t = %.2f s ================\n', t(n));
 fprintf('1. INLET              P1 = %.3f bar(g), T1 = %.1f K, total flow %.4f kg/s\n', bg(P1t(n)), T1, mm_h(n) + mp_h(n));
 fprintf('2. PILOT REGULATOR    stroke %.4f mm, flow area %.4f mm2, P ratio %.3f (%s), flow %.3f g/s\n', ...
-        xp_h(n)*1e3, Acone(xp_h(n), d_ps)*1e6, r_pil, ch{(r_pil <= pcr)+1}, mp_h(n)*1e3);
+        xp_h(n)*1e3, Acone(xp_h(n), d_ps)*1e6, r_pil, ch{(r_pil <= b_cr)+1}, mp_h(n)*1e3);
 fprintf('3. PISTON CHAMBER     regulated pressure Pr = %.3f bar(g) (set %.2f), temperature %.1f K\n', bg(Pr_h(n)), Pr_set_barg, Tr_h(n));
-fprintf('4. BLEED ORIFICE      P ratio %.3f (%s), flow %.3f g/s to ambient\n', r_bl, ch{(r_bl <= pcr)+1}, mb_h(n)*1e3);
+fprintf('4. BLEED ORIFICE      P ratio %.3f (%s), flow %.3f g/s to ambient\n', r_bl, ch{(r_bl <= b_cr)+1}, mb_h(n)*1e3);
 fprintf('5. BIG PISTON         pressure force %.1f N, spring force %.1f N, displacement %.3f mm (design %.3f, stroke %.3f)\n', ...
         (Pr_h(n) - Pamb)*A_mp, F_m0 + k_m*xm_h(n), xm_h(n)*1e3, xm_des*1e3, xm_max*1e3);
 fprintf('6. MAIN VALVE         opening %.3f mm, flow area %.1f mm2, P ratio %.3f (%s), flow %.4f kg/s\n', ...
-        (xm_max - xm_h(n))*1e3, min(Acone(xm_max - xm_h(n), d_ms), A_bore)*1e6, r_mv, ch{(r_mv <= pcr)+1}, mm_h(n));
+        (xm_max - xm_h(n))*1e3, min(Acone(xm_max - xm_h(n), d_ms), A_bore)*1e6, r_mv, ch{(r_mv <= b_cr)+1}, mm_h(n));
 fprintf('7. OUTLET             P2 = %.3f bar(g), T2 = %.1f K, flow to the load %.4f kg/s (%s)\n', ...
-        bg(P2_h(n)), T2_h(n), ml_h(n), ch{(r_ld <= pcr)+1});
+        bg(P2_h(n)), T2_h(n), ml_h(n), ch{(r_ld <= b_cr)+1});
 fprintf('\nREGULATOR OUTPUT      Pr = %.3f bar(g), flow %.3f g/s\n', bg(Pr_h(n)), mp_h(n)*1e3);
 fprintf('MAIN VALVE OUTPUT     P2 = %.3f bar(g), flow %.4f kg/s\n', bg(P2_h(n)), ml_h(n));
 % --- is the result steady? compare the last 10 % of the time with the 10 % before it
